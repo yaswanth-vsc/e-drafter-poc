@@ -1,0 +1,396 @@
+<div class="shell">
+
+  <header class="topbar">
+    <div>
+      <h1>eDrafter POC</h1>
+      <p class="sub">Lease Agreement · Karnataka · Article 30(1)(i)</p>
+    </div>
+    <div class="topbar-right">
+      @if (spend(); as s) {
+        <span class="chip" [class.chip-live]="s.mode === 'Live'" [class.chip-mock]="s.mode !== 'Live'">
+          {{ s.mode }}{{ s.armed ? ' · ARMED' : '' }}
+        </span>
+      }
+    </div>
+  </header>
+
+  @if (error(); as e) {
+    <div class="banner bad">{{ e }} <button class="link" (click)="error.set(null)">dismiss</button></div>
+  }
+
+  @if (liveMessage(); as m) {
+    <div class="banner info">{{ m }} <button class="link" (click)="liveMessage.set(null)">dismiss</button></div>
+  }
+
+  <div class="layout">
+    <main class="main">
+
+      <!-- ================= STEP 1 — THE FORM ================= -->
+      @if (step() === 'form') {
+        <section class="card">
+          <h2>Lease details</h2>
+          <p class="hint">
+            One form. Everything after the stamp arrives happens automatically.
+            @if (rules(); as r) {
+              <span class="hint-rules">
+                Field rules come from eDrafter, not from us — max
+                {{ r.rules.fields.maxFieldLength }} characters on names.
+              </span>
+            }
+          </p>
+
+          <form [formGroup]="form" (ngSubmit)="submitForm()">
+
+            <div class="grid2">
+              <fieldset>
+                <legend>Lessor (first party)</legend>
+                <label>Name
+                  <input formControlName="firstPartyName" maxlength="50" placeholder="Ramesh Kumar">
+                  @if (fieldInvalid('firstPartyName')) { <small class="err">Required, max 50 characters</small> }
+                </label>
+                <label>Email
+                  <input formControlName="firstPartyEmail" type="email" placeholder="ramesh@example.com">
+                  @if (fieldInvalid('firstPartyEmail')) { <small class="err">A valid email is required</small> }
+                </label>
+                <label>Phone
+                  <input formControlName="firstPartyPhone" maxlength="10" placeholder="9876543210">
+                  @if (fieldInvalid('firstPartyPhone')) { <small class="err">10 digits</small> }
+                </label>
+              </fieldset>
+
+              <fieldset>
+                <legend>Lessee (second party)</legend>
+                <label>Name
+                  <input formControlName="secondPartyName" maxlength="50" placeholder="Jane Smith">
+                  @if (fieldInvalid('secondPartyName')) { <small class="err">Required, max 50 characters</small> }
+                </label>
+                <label>Email
+                  <input formControlName="secondPartyEmail" type="email" placeholder="jane@example.com">
+                  @if (fieldInvalid('secondPartyEmail')) { <small class="err">A valid email is required</small> }
+                </label>
+                <label>Phone
+                  <input formControlName="secondPartyPhone" maxlength="10" placeholder="9876543211">
+                  @if (fieldInvalid('secondPartyPhone')) { <small class="err">10 digits</small> }
+                </label>
+              </fieldset>
+            </div>
+
+            <fieldset>
+              <legend>Property and terms</legend>
+              <label>Property address
+                <textarea formControlName="propertyAddress" rows="2"
+                          placeholder="No 42, 3rd Cross, Indiranagar, Bengaluru 560038"></textarea>
+                @if (fieldInvalid('propertyAddress')) { <small class="err">Required</small> }
+              </label>
+
+              <div class="grid3">
+                <label>Consideration (₹)
+                  <input formControlName="considerationAmount" type="number" min="1">
+                </label>
+                <label>Monthly rent (₹)
+                  <input formControlName="monthlyRent" type="number" min="1">
+                </label>
+                <label>Term (months)
+                  <input formControlName="leaseTermMonths" type="number" min="1" max="12">
+                  <small class="hint-inline">Article 30(1)(i) covers up to 12 months</small>
+                </label>
+              </div>
+
+              <label class="narrow">Start date
+                <input formControlName="leaseStartDate" type="date">
+              </label>
+            </fieldset>
+
+            <div class="duty-preview">
+              <div>
+                <span class="duty-label">Estimated stamp duty</span>
+                <strong class="duty-value">₹{{ estimatedDuty | number:'1.2-2' }}</strong>
+              </div>
+              <small>
+                0.5% of consideration
+                @if (dutyIsCapped) {
+                  <span class="capped">· capped at ₹500 for this article</span>
+                }
+              </small>
+            </div>
+
+            <button class="btn primary" type="submit" [disabled]="busy()">
+              {{ busy() ? 'Working…' : 'Continue to review' }}
+            </button>
+            <p class="hint">Nothing is charged at this step.</p>
+          </form>
+        </section>
+      }
+
+      <!-- ================= STEP 2 — REVIEW AND SPEND ================= -->
+      @if (step() === 'review' && agreement(); as a) {
+        <section class="card">
+          <h2>Review</h2>
+          <p class="ref">Reference <code>{{ a.refId }}</code></p>
+
+          @if (quote(); as q) {
+            <table class="costs">
+              <tbody>
+                <tr>
+                  <td>Stamp duty <small>({{ q.duty.pct }}% of ₹{{ q.duty.consideration | number }})</small></td>
+                  <td class="num">₹{{ q.order.stampValue | number:'1.2-2' }}</td>
+                </tr>
+                @if (q.duty.wasCapped) {
+                  <tr class="note-row">
+                    <td colspan="2">
+                      <small>Capped at ₹{{ q.duty.cap }} for article {{ q.duty.article }}.
+                      This cap is not returned by eDrafter's API and is pending their confirmation.</small>
+                    </td>
+                  </tr>
+                }
+                <tr>
+                  <td>eDrafter service charge</td>
+                  <td class="num">₹{{ q.order.serviceCharge | number:'1.2-2' }}</td>
+                </tr>
+                <tr>
+                  <td>GST 18% <small>on the service charge only</small></td>
+                  <td class="num">₹{{ q.order.gst | number:'1.2-2' }}</td>
+                </tr>
+                <tr>
+                  <td>Shipping <small>digital only</small></td>
+                  <td class="num">₹{{ q.order.shipping | number:'1.2-2' }}</td>
+                </tr>
+                <tr class="subtotal">
+                  <td>Order total</td>
+                  <td class="num">₹{{ q.order.total | number:'1.2-2' }}</td>
+                </tr>
+                <tr>
+                  <td>
+                    e-Sign <small>₹{{ q.esign.ratePerSignatory }} × {{ q.esign.signatories }} signatories
+                    · {{ q.esign.signMethod }} · no GST</small>
+                  </td>
+                  <td class="num">₹{{ q.esign.total | number:'1.2-2' }}</td>
+                </tr>
+                <tr class="total">
+                  <td>Total</td>
+                  <td class="num">₹{{ q.grandTotal | number:'1.2-2' }}</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <p class="wallet">
+              Wallet balance ₹{{ q.walletBalance | number:'1.2-2' }}
+              @if (!q.affordable) { <span class="err"> — not enough to cover this order</span> }
+            </p>
+
+            <div class="spend-gate">
+              <h3>Step 1 of 2 — place the stamp order</h3>
+              <p>
+                This debits <strong>₹{{ q.order.total | number:'1.2-2' }}</strong> now.
+                It is refundable only while the order is still <em>Pending</em>.
+              </p>
+              <label class="check">
+                <input type="checkbox" [checked]="confirmOrder()"
+                       (change)="confirmOrder.set(!confirmOrder())">
+                I understand this charges ₹{{ q.order.total | number:'1.2-2' }}
+              </label>
+              <button class="btn spend" (click)="placeOrder()"
+                      [disabled]="!confirmOrder() || busy() || !q.affordable">
+                {{ busy() ? 'Placing…' : 'Place order · ₹' + (q.order.total | number:'1.2-2') }}
+              </button>
+              <p class="hint">
+                The e-sign charge comes later, after the stamp arrives — you will confirm it separately.
+              </p>
+            </div>
+          } @else {
+            <p class="hint">Fetching the quote…</p>
+          }
+
+          <button class="link back" (click)="startNew()">Start again</button>
+        </section>
+      }
+
+      <!-- ================= STEP 3 — TRACKING ================= -->
+      @if (step() === 'tracking' && agreement(); as a) {
+        <section class="card">
+          <div class="track-head">
+            <div>
+              <h2>{{ a.firstParty.name }} &amp; {{ a.secondParty.name }}</h2>
+              <p class="ref">Reference <code>{{ a.refId }}</code></p>
+            </div>
+            <span class="status" [class]="statusClass(a.status)">{{ a.status }}</span>
+          </div>
+
+          <!-- The UNKNOWN state. Deliberately never offers a retry. -->
+          @if (unknownOutcome(); as u) {
+            <div class="unknown-panel">
+              <h3>The outcome is unknown</h3>
+              <p>{{ u.message }}</p>
+              <p class="strong">{{ u.note }}</p>
+              <p>
+                The request timed out or failed mid-flight, so the money may or may not have
+                moved. Retrying could charge twice, so the only safe action is to check with
+                eDrafter what actually happened.
+              </p>
+              <button class="btn" (click)="reconcile()" [disabled]="busy()">
+                {{ busy() ? 'Checking…' : 'Reconcile with eDrafter' }}
+              </button>
+            </div>
+          }
+
+          <ol class="timeline">
+            <li [class.done]="a.orderIdd">
+              <span class="dot"></span>
+              <div>
+                <strong>Order placed</strong>
+                @if (a.orderIdd) {
+                  <small>Order {{ a.orderDisplayId ?? a.orderIdd }}</small>
+                } @else {
+                  <small>Not yet placed</small>
+                }
+              </div>
+            </li>
+            <!--
+              Driven by the status, NOT by certificateNo. eDrafter returns
+              certificateNo as an empty string even on a completed order, so gating
+              this step on it leaves it perpetually "waiting" after the stamp has
+              actually arrived.
+            -->
+            <li [class.done]="stampIssued(a)">
+              <span class="dot"></span>
+              <div>
+                <strong>e-Stamp issued</strong>
+                @if (stampIssued(a)) {
+                  @if (a.certificateNo) {
+                    <small>{{ a.certificateNo }}</small>
+                  } @else {
+                    <small>Issued against order {{ a.orderDisplayId ?? a.orderIdd }}
+                      <em>— eDrafter did not return a certificate number</em></small>
+                  }
+                  <a class="link" [href]="stampPdfUrl(a.id)" target="_blank">view stamp</a>
+                } @else {
+                  <small>
+                    Waiting. eDrafter accept the order manually, then it takes about one working
+                    hour — Mon–Fri, 9–6, cut-off 3:30pm. An order placed late on Friday may not
+                    be ready until Monday.
+                  </small>
+                  <button class="link" (click)="refreshStamp()" [disabled]="busy()">check now</button>
+                }
+              </div>
+            </li>
+            <li [class.done]="a.esignDocumentId">
+              <span class="dot"></span>
+              <div>
+                <strong>Sent for signing</strong>
+                @if (a.esignDocumentId) {
+                  <small>Charged ₹{{ a.esignCost | number:'1.2-2' }} · non-refundable</small>
+                } @else {
+                  <small>Not yet sent</small>
+                }
+              </div>
+            </li>
+            <li [class.done]="a.status === 'Signed'">
+              <span class="dot"></span>
+              <div>
+                <strong>Signed by all parties</strong>
+                @if (a.status === 'Signed') {
+                  <a class="link" [href]="signedPdfUrl(a.id)" target="_blank">download signed PDF</a>
+                }
+              </div>
+            </li>
+          </ol>
+
+          <!-- Second spend gate — only once the stamp exists -->
+          @if (a.status === 'StampReady' && !a.esignDocumentId) {
+            <div class="spend-gate danger">
+              <h3>Step 2 of 2 — send for signing</h3>
+              @if (quote(); as q) {
+                <p class="warn">{{ q.esign.confirmation }}</p>
+                <label class="check">
+                  <input type="checkbox" [checked]="confirmSend()"
+                         (change)="confirmSend.set(!confirmSend())">
+                  I understand this charges ₹{{ q.esign.total | number:'1.2-2' }} and is not refunded
+                  if a signatory declines
+                </label>
+                <button class="btn spend" (click)="sendForSigning()"
+                        [disabled]="!confirmSend() || busy()">
+                  {{ busy() ? 'Sending…' : 'Send to ' + q.esign.signatories + ' signatories · ₹' + (q.esign.total | number:'1.2-2') }}
+                </button>
+              } @else {
+                <button class="link" (click)="loadQuote(a.id)">load the cost</button>
+              }
+              <p class="hint">
+                <a [href]="pdfUrl(a.id)" target="_blank">Preview the agreement</a> before sending.
+              </p>
+            </div>
+          }
+
+          @if (a.signatories.length) {
+            <div class="signatories">
+              <h3>Signatories</h3>
+              @for (s of a.signatories; track s.email) {
+                <div class="sig">
+                  <div>
+                    <strong>{{ s.name }}</strong>
+                    <small>{{ s.email }}</small>
+                  </div>
+                  <div class="sig-right">
+                    <span class="status" [class]="statusClass(s.status === 'signed' ? 'Signed' : 'Pending')">
+                      {{ s.status }}
+                    </span>
+                    @if (s.signUrl) {
+                      <a class="link" [href]="s.signUrl" target="_blank">signing link</a>
+                    }
+                  </div>
+                </div>
+              }
+              @if (a.esignDocumentId && a.status !== 'Signed') {
+                <button class="link" (click)="refreshSigning()" [disabled]="busy()">
+                  refresh signing status
+                </button>
+                <p class="hint">
+                  Declines and expiries raise no webhook — they are only visible by checking.
+                </p>
+              }
+            </div>
+          }
+
+          <button class="link back" (click)="startNew()">New agreement</button>
+        </section>
+      }
+    </main>
+
+    <!-- ================= SIDEBAR ================= -->
+    <aside class="side">
+      <div class="card compact">
+        <h3>Agreements</h3>
+        @if (!agreements().length) {
+          <p class="hint">None yet.</p>
+        }
+        @for (a of agreements(); track a.id) {
+          <button class="row" (click)="open(a)" [class.active]="agreement()?.id === a.id">
+            <div>
+              <strong>{{ a.firstParty.name }}</strong>
+              <small>{{ a.refId }}</small>
+            </div>
+            <span class="status small" [class]="statusClass(a.status)">{{ a.status }}</span>
+          </button>
+        }
+      </div>
+
+      @if (spend(); as s) {
+        <div class="card compact">
+          <h3>Spend</h3>
+          <div class="kv"><span>Mode</span><strong>{{ s.mode }}</strong></div>
+          <div class="kv"><span>Armed</span><strong>{{ s.armed ? 'yes' : 'no' }}</strong></div>
+          <div class="kv"><span>Charges</span><strong>{{ s.succeededCount }}</strong></div>
+          <div class="kv"><span>Spent</span><strong>₹{{ s.totalSpentPaise / 100 | number:'1.2-2' }}</strong></div>
+          @if (s.needsReviewCount > 0) {
+            <div class="kv bad-kv">
+              <span>Needs review</span><strong>{{ s.needsReviewCount }}</strong>
+            </div>
+            <button class="btn small" (click)="reconcile()" [disabled]="busy()">Reconcile</button>
+          }
+          <p class="hint">
+            @if (!s.armed) { Spending is disarmed — nothing can reach the live API. }
+          </p>
+        </div>
+      }
+    </aside>
+  </div>
+</div>

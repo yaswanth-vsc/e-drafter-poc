@@ -1,0 +1,97 @@
+# ─── Secrets ─────────────────────────────────────────────────────────────
+# The real API key and webhook secret live here. appsettings.json ships with
+# an empty key, pointed at the mock and disarmed.
+appsettings.Local.json
+appsettings.*.Local.json
+*.local.json
+.env
+.env.*
+secrets.json
+*whsec*
+*.pem
+*.key
+
+# ─── Data and generated documents ────────────────────────────────────────
+# Real party names, addresses and signatures. Never commit these.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+storage/
+src/EDrafter.Api/storage/
+
+# Generated and downloaded PDFs
+lease-agreement.pdf
+signed-agreement.pdf
+test-2page.pdf
+src/*.pdf
+
+# ─── Commercial and contractual documents ────────────────────────────────
+# eDrafter's negotiated rates and the signed contract with VSoftware
+# Consulting. They stay on disk; they do not belong in source control.
+Proposal & Quotation*.pdf
+*Service Agreement*.docx
+eDrafter-B2B-API-Documentation.pdf
+
+# Postman collection and environment — internal working files.
+*.postman_collection.json
+*.postman_environment.json
+
+# ─── Working notes ───────────────────────────────────────────────────────
+# Most of docs/ is the research trail: pricing negotiations, questions put to
+# eDrafter, draft emails, superseded plans. Only three files describe the
+# system as it stands, and those are the three that ship.
+#
+#   13-API-EXAMPLES.md      every endpoint, with a working request
+#   18-THE-FLOW.md          what the system does
+#   19-SETUP-AND-CONFIG.md  how to run it, configure it, register webhooks
+docs/*
+!docs/13-API-EXAMPLES.md
+!docs/18-THE-FLOW.md
+!docs/19-SETUP-AND-CONFIG.md
+
+# ─── .NET ────────────────────────────────────────────────────────────────
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+.vs/
+TestResults/
+*.trx
+msbuild.log
+
+# ─── Node and Angular ────────────────────────────────────────────────────
+node_modules/
+dist/
+.angular/
+.angular-tmp/
+npm-debug.log*
+yarn-error.log*
+*.tsbuildinfo
+
+# ─── Logs ────────────────────────────────────────────────────────────────
+# Payload logs contain full request and response bodies.
+*.log
+logs/
+api.log
+mock.log
+tunnel.log
+ui.log
+
+# ─── Editors and OS ──────────────────────────────────────────────────────
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Scratch ─────────────────────────────────────────────────────────────
+*.tmp.js
+*.tmp
+/tmp/
+.linked-aid

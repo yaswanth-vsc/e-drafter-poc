@@ -1,0 +1,14 @@
+{
+  "name": "edrafter-poc-tools",
+  "private": true,
+  "description": "Helper scripts for the eDrafter POC: webhook registration and tunnelling.",
+  "scripts": {
+    "webhook:list": "node register-webhook.js --list",
+    "webhook:register": "node register-webhook.js",
+    "tunnel": "node tunnel-and-register.js --dry-run",
+    "tunnel:register": "node tunnel-and-register.js"
+  },
+  "devDependencies": {
+    "localtunnel": "^2.0.2"
+  }
+}

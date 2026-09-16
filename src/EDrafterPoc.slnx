@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EDrafter.Api/EDrafter.Api.csproj" />
+  <Project Path="EDrafter.MockServer/EDrafter.MockServer.csproj" />
+</Solution>
