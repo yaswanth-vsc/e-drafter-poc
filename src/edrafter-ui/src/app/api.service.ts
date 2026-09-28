@@ -89,6 +89,16 @@ export class ApiService {
     return `${BASE}/api/agreements/${id}/stamp-pdf`;
   }
 
+  /** Stamp paper + agreement with every signature box drawn on it. Local only — no Zoho call. */
+  signingPreviewUrl(id: string): string {
+    return `${BASE}/api/agreements/${id}/signing-preview`;
+  }
+
+  /** The exact file that is uploaded to Zoho: stamp paper + agreement. */
+  finalPdfUrl(id: string): string {
+    return `${BASE}/api/agreements/${id}/final-pdf`;
+  }
+
   // ---- Live updates ------------------------------------------------------
   //
   // The wait between ordering and the stamp arriving is measured in hours, so

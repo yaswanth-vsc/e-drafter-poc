@@ -30,6 +30,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             e.HasIndex(x => x.RefId).IsUnique();
             e.HasIndex(x => x.OrderIdd);
             e.HasIndex(x => x.EsignDocumentId);
+            e.HasIndex(x => x.ZohoRequestId);
             e.Property(x => x.RefId).HasMaxLength(120).IsRequired();
             e.Property(x => x.Status).HasConversion<int>();
             e.Property(x => x.ConsiderationAmount).HasPrecision(18, 2);

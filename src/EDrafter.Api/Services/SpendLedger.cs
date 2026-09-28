@@ -171,6 +171,24 @@ public sealed class SpendLedger(
             "Reconciled: attempt {Id} adopted eDrafter id {EdrafterId}", attemptId, edrafterId);
     }
 
+    /// <summary>
+    /// Marks an Unknown attempt as definitely NOT having happened, after reconciliation
+    /// proved it — e.g. the Zoho request is still a draft, so /submit never took effect.
+    /// FailedSafe is what lets a person send again; nothing here resends by itself.
+    /// </summary>
+    public async Task MarkNotPlacedAsync(long attemptId, string reason, CancellationToken ct = default)
+    {
+        var attempt = await db.SpendAttempts.FindAsync([attemptId], ct);
+        if (attempt is null) return;
+
+        attempt.Status = SpendStatus.FailedSafe;
+        attempt.FailureReason = reason;
+        attempt.ResolvedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        logger.LogInformation("Reconciled: attempt {Id} did not happen — {Reason}", attemptId, reason);
+    }
+
     public async Task<List<SpendAttempt>> GetUnresolvedAsync(CancellationToken ct = default) =>
         await db.SpendAttempts
             .Where(a => a.Status == SpendStatus.Unknown || a.Status == SpendStatus.Attempting)

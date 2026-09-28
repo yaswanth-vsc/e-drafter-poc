@@ -18,6 +18,12 @@ namespace EDrafter.Api.Services;
 /// says so rather than implying otherwise.
 ///
 /// No Aadhaar anywhere — the field was dropped by decision.
+///
+/// ZOHO LAYOUT (Agreement.SigningProvider == "zoho"): Zoho places a real signature box
+/// for each party on every page, so instead of drawn signature blocks every page footer
+/// keeps an empty band — first party bottom-left, second party bottom-right — sized by
+/// SignatureLayout, which the Zoho fields use too. The eDrafter layout is left exactly as
+/// it was proven.
 /// </summary>
 public sealed class AgreementPdfBuilder
 {
@@ -28,19 +34,37 @@ public sealed class AgreementPdfBuilder
 
     public byte[] Build(Agreement a)
     {
+        var zoho = IsZohoLayout(a);
+
         var doc = Document.Create(container =>
         {
             container.Page(page =>
             {
                 page.Size(PageSizes.A4);
-                page.Margin(2, Unit.Centimetre);
+
+                if (zoho)
+                {
+                    // Tight bottom margin: the footer itself holds the signature band, and
+                    // its position must match SignatureLayout to the point.
+                    page.MarginHorizontal(SignatureLayout.SideOffset, Unit.Point);
+                    page.MarginTop(2, Unit.Centimetre);
+                    page.MarginBottom(SignatureLayout.PageBottomMargin, Unit.Point);
+                }
+                else
+                {
+                    page.Margin(2, Unit.Centimetre);
+                }
+
                 // Lato ships embedded with QuestPDF, so the document renders identically
                 // on any machine — including a Linux server with no fonts installed.
                 page.DefaultTextStyle(t => t.FontSize(10).FontFamily("Lato"));
 
                 page.Header().Element(h => Header(h, a));
                 page.Content().Element(c => Content(c, a));
-                page.Footer().Element(Footer);
+                if (zoho)
+                    page.Footer().Element(f => ZohoFooter(f, a));
+                else
+                    page.Footer().Element(Footer);
             });
         });
 
@@ -166,6 +190,17 @@ public sealed class AgreementPdfBuilder
                 });
             }
 
+            if (IsZohoLayout(a))
+            {
+                // No signature blocks here: both parties sign in the band at the foot of
+                // EVERY page, the stamp paper included.
+                // ShowEntire: never strand the tail of this sentence alone on a blank page.
+                col.Item().PaddingTop(8).ShowEntire().Text(
+                    "IN WITNESS WHEREOF the parties have executed this Agreement using Aadhaar eSign on the " +
+                    "date first written above, signing every page, the e-stamp paper included.");
+                return;
+            }
+
             col.Item().PaddingTop(8).Text(
                 "IN WITNESS WHEREOF the parties have executed this Agreement electronically on the date " +
                 "first written above.");
@@ -221,6 +256,49 @@ public sealed class AgreementPdfBuilder
                     t.TotalPages();
                 });
             });
+        });
+
+    private static bool IsZohoLayout(Agreement a) =>
+        string.Equals(a.SigningProvider, "zoho", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Page number, captions, the empty signature band, then empty space for Zoho's Aadhaar
+    /// eSign text. Everything below the captions is left blank on purpose — Zoho draws into
+    /// it. Heights match SignatureLayout exactly.
+    /// </summary>
+    private static void ZohoFooter(IContainer c, Agreement a) =>
+        c.Column(col =>
+        {
+            col.Item().PaddingTop(4).LineHorizontal(0.5f).LineColor(Colors.Grey.Lighten1);
+            col.Item().PaddingTop(3).Row(r =>
+            {
+                r.RelativeItem().Text("Signed electronically by both parties on every page (Aadhaar eSign).")
+                    .FontSize(7).FontColor(Colors.Grey.Darken1);
+                r.ConstantItem(90).AlignRight().Text(t =>
+                {
+                    t.DefaultTextStyle(s => s.FontSize(7).FontColor(Colors.Grey.Darken1));
+                    t.Span("Page ");
+                    t.CurrentPageNumber();
+                    t.Span(" of ");
+                    t.TotalPages();
+                });
+            });
+
+            // Captions ABOVE the boxes: Zoho prints its own text under them.
+            col.Item().PaddingTop(4).Height(SignatureLayout.CaptionHeight).PaddingBottom(3).Row(r =>
+            {
+                r.ConstantItem(SignatureLayout.BoxWidth).AlignBottom()
+                    .Text($"First Party (Lessor): {a.FirstPartyName}")
+                    .FontSize(7).FontColor(Colors.Grey.Darken2).ClampLines(1);
+                r.RelativeItem();
+                r.ConstantItem(SignatureLayout.BoxWidth).AlignBottom()
+                    .Text($"Second Party (Lessee): {a.SecondPartyName}")
+                    .FontSize(7).FontColor(Colors.Grey.Darken2).ClampLines(1);
+                r.ConstantItem(SignatureLayout.RightSlack);
+            });
+
+            col.Item().Height(SignatureLayout.BoxHeight);          // Zoho's signature boxes
+            col.Item().Height(SignatureLayout.AadhaarTextSpace);   // Zoho's "Date / Aadhaar eSign by" lines
         });
 
     private static IContainer LabelCell(IContainer c) =>

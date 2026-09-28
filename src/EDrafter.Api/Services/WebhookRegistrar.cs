@@ -57,7 +57,7 @@ public sealed class WebhookRegistrar(
             // Re-register when the secret is unknown: eDrafter shows it only at creation,
             // so an existing hook we have no secret for is useless to us.
             var result = await client.RegisterWebhookAsync(
-                callbackUrl, ["order.completed", "esign.completed"], ct);
+                callbackUrl, ["order.completed", "order.cancelled", "esign.completed"], ct);
 
             if (result?.Webhook?.Secret is { Length: > 0 } secret)
             {

@@ -57,6 +57,35 @@ public sealed class PollingService(
 
         await PollOrdersAsync(db, client, documents, hub, ct);
         await PollSigningAsync(db, client, documents, hub, ct);
+        await PollZohoSigningAsync(db, scope.ServiceProvider.GetRequiredService<ZohoSigningService>(), ct);
+    }
+
+    /// <summary>
+    /// Zoho requests out for signature — the fallback for a missed Zoho webhook, and the
+    /// retry for a signed PDF whose download failed. Only requests that were actually
+    /// submitted are polled, so nothing here calls Zoho until a real send has happened.
+    /// </summary>
+    private async Task PollZohoSigningAsync(AppDbContext db, ZohoSigningService zoho, CancellationToken ct)
+    {
+        var ids = await db.Agreements
+            .Where(a => a.ZohoRequestId != null && a.ZohoSubmittedAt != null &&
+                        (a.Status == AgreementStatus.SentForSigning ||
+                         a.Status == AgreementStatus.PartiallySigned ||
+                         (a.Status == AgreementStatus.Signed && a.SignedPdfPath == null)))
+            .Select(a => a.Id)
+            .ToListAsync(ct);
+
+        foreach (var id in ids)
+        {
+            try
+            {
+                await zoho.RefreshAsync(id, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Polling Zoho for agreement {Id} failed; next sweep retries.", id);
+            }
+        }
     }
 
     /// <summary>Orders still waiting on a stamp — covers a missed order.completed.</summary>

@@ -11,6 +11,10 @@ export interface Signatory {
   status: string;
   signUrl: string | null;
   signedAt: string | null;
+  /** 'first' | 'second' — decides the signature corner. */
+  role: string | null;
+  /** Zoho signing order: the second party is 1, the first party is 2. */
+  signingOrder: number | null;
 }
 
 export interface Agreement {
@@ -30,6 +34,13 @@ export interface Agreement {
   certificateNo: string | null;
   esignDocumentId: string | null;
   esignCost: number | null;
+  /** 'zoho' | 'edrafter' | null (older rows). */
+  signingProvider: string | null;
+  zohoRequestId: string | null;
+  zohoSubmittedAt: string | null;
+  /** True once the signing request actually went out, through either provider. */
+  sentForSigning: boolean;
+  hasSignedPdf: boolean;
   signatories: Signatory[];
   createdAt: string;
   updatedAt: string | null;
@@ -46,7 +57,9 @@ export type AgreementStatus =
   | 'Signed'
   | 'Failed'
   | 'NeedsReview'
-  | 'Cancelled';
+  | 'Cancelled'
+  | 'OrderOnHold'
+  | 'OrderRejected';
 
 export interface CreateAgreementInput {
   firstPartyName: string;
@@ -79,6 +92,7 @@ export interface Quote {
     gst: number;
     total: number;
   };
+  /** eDrafter e-sign only. Null when signing goes through Zoho. */
   esign: {
     signMethod: string;
     signatories: number;
@@ -87,7 +101,16 @@ export interface Quote {
     gst: string;
     /** The non-refundability warning, written by the backend. Display it verbatim. */
     confirmation: string;
-  };
+  } | null;
+  /** Zoho Sign details. Its cost is not part of the quote yet. */
+  signing: {
+    provider: string;
+    method: string;
+    order: string;
+    note: string;
+    /** Written by the backend. Display it verbatim. */
+    confirmation: string;
+  } | null;
   grandTotal: number;
   walletBalance: number;
   affordable: boolean;

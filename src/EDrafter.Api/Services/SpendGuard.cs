@@ -30,6 +30,17 @@ public sealed class SpendGuard(
     /// </summary>
     public async Task<string?> CheckAsync(SpendKind kind, long amountPaise, CancellationToken ct = default)
     {
+        // Zoho has no mock: every Zoho call is real, so it has its own switch and does not
+        // inherit eDrafter's Mode. Nothing is submitted until Zoho:ArmSpending is true.
+        if (kind == SpendKind.ZohoEsign)
+        {
+            if (config.GetValue("Zoho:ArmSpending", false)) return null;
+
+            return "BLOCKED: submitting to Zoho Sign consumes credits and emails the signers, but " +
+                   "Zoho:ArmSpending is false. The free draft was created — open it in Zoho Sign to " +
+                   "check the signature boxes, then set Zoho:ArmSpending to true deliberately and send again.";
+        }
+
         // Against the mock, nothing real can be spent — let it through.
         if (!IsLive) return null;
 

@@ -12,6 +12,79 @@ public sealed class QuoteRequest
     public bool DoorstepDelivery { get; set; }
 }
 
+/// <summary>
+/// POST /stamp-duty/calculate — eDrafter computes the duty for a consideration-based
+/// article. Which amount field to send is per-article: 30(1)(i) requires RentalSecurity
+/// and ignores ConsiderationPrice, returning autoCalculated with no stampDuty if the wrong
+/// one is sent. GET /states/:state/articles exposes each article's stampDutyRule.
+/// </summary>
+public sealed class StampDutyCalcRequest
+{
+    public string State { get; set; } = "";
+    public string ArticleCode { get; set; } = "";
+    public decimal? ConsiderationPrice { get; set; }
+    public decimal? RentalSecurity { get; set; }
+}
+
+public sealed class StampDutyCalcResponse
+{
+    public string State { get; set; } = "";
+    public string ArticleCode { get; set; } = "";
+
+    /// <summary>False when eDrafter has no rule for this article — the caller must supply
+    /// the denomination itself.</summary>
+    public bool AutoCalculated { get; set; }
+
+    /// <summary>Null when the article is ruled but the required amount was missing or too
+    /// low; <see cref="Message"/> then says which field is wanted.</summary>
+    public decimal? StampDuty { get; set; }
+
+    public string? Basis { get; set; }
+    public decimal? Amount { get; set; }
+    public string? Currency { get; set; }
+    public string? Message { get; set; }
+    public StampDutyRule? Rule { get; set; }
+}
+
+public sealed class StampDutyRule
+{
+    public bool AutoCalc { get; set; }
+    public string? Mode { get; set; }
+    public decimal? Percent { get; set; }
+    public string? Of { get; set; }
+    public decimal? Min { get; set; }
+    public decimal? Max { get; set; }
+
+    /// <summary>Smallest accepted input — 30(1)(i) rejects a rental security under ₹4,000.</summary>
+    public decimal? MinInput { get; set; }
+
+    /// <summary>Which amount field this article wants: "rentalSecurity" or "considerationPrice".</summary>
+    public string? Requires { get; set; }
+}
+
+/// <summary>
+/// GET /states/:state/articles. Each article carries a StampDutyRule when eDrafter can
+/// auto-price it, which is how a form knows whether to ask for a rental security, a
+/// consideration price, or a denomination typed by hand.
+/// </summary>
+public sealed class ArticlesResponse
+{
+    public string State { get; set; } = "";
+    public bool Known { get; set; }
+    public bool HasArticleCode { get; set; }
+    public int Count { get; set; }
+    public List<ArticleDto> Articles { get; set; } = new();
+}
+
+public sealed class ArticleDto
+{
+    public string Code { get; set; } = "";
+    public string Name { get; set; } = "";
+
+    /// <summary>Null when this article is not auto-priced.</summary>
+    public StampDutyRule? StampDutyRule { get; set; }
+}
+
 public sealed class CreateOrderRequest
 {
     public string FirstParty { get; set; } = "";
@@ -41,6 +114,36 @@ public sealed class CreateEsignRequest
     public int? ExpiryDays { get; set; }
     public string? SignaturePosition { get; set; }
     public int? SignaturePage { get; set; }
+
+    /// <summary>
+    /// Repeats every signatory's signature on every page, at <see cref="SignaturePosition"/>.
+    ///
+    /// Do NOT combine with per-signatory ExtraPlaceholders. eDrafter honours both
+    /// independently, so a signatory given all-pages AND explicit placeholders is stamped
+    /// twice per page — verified 2026-09-22, where the duplicates overlapped visibly on
+    /// the page all-pages defaults to.
+    /// </summary>
+    public bool? SignAllPages { get; set; }
+
+    // ---- Fields eDrafter's dashboard sends, absent from their written docs ----
+
+    /// <summary>Ink colour of the rendered signature: "blue" (dashboard default) or "black".</summary>
+    public string? SignColor { get; set; }
+
+    /// <summary>"small", "medium" (dashboard default) or "large".</summary>
+    public string? SignSize { get; set; }
+
+    /// <summary>"parallel" — everyone signs at once — or "sequential".</summary>
+    public string? SigningOrder { get; set; }
+
+    /// <summary>Require an OTP at signing, on top of the sign method.</summary>
+    public bool? OtpRequired { get; set; }
+
+    /// <summary>How many reminder emails an unsigned document triggers.</summary>
+    public int? ReminderCount { get; set; }
+
+    /// <summary>Days between those reminders.</summary>
+    public int? ReminderFrequencyDays { get; set; }
 }
 
 public sealed class EsignSignatoryDto
@@ -48,6 +151,47 @@ public sealed class EsignSignatoryDto
     public string Name { get; set; } = "";
     public string Email { get; set; } = "";
     public string? Phone { get; set; }
+
+    /// <summary>All pages, for this signatory only. Same mutual-exclusion warning as
+    /// <see cref="CreateEsignRequest.SignAllPages"/>.</summary>
+    public bool? AllPages { get; set; }
+
+    /// <summary>
+    /// This signatory's BASE signature box. Required whenever ExtraPlaceholders is used:
+    /// the extras are additions to this one, not a standalone list.
+    ///
+    /// Sending ExtraPlaceholders without a Placeholder does not work — eDrafter ignores
+    /// the coordinates entirely and falls back to one default signature per page, which
+    /// silently drops a signatory. Verified 2026-09-23 (document EDR7327085464).
+    ///
+    /// This field is absent from eDrafter's written API documentation; it was found in
+    /// the payload their own dashboard sends.
+    /// </summary>
+    public EsignPlaceholderDto? Placeholder { get; set; }
+
+    /// <summary>
+    /// Additional signature boxes, one per further page — the base <see cref="Placeholder"/>
+    /// covers the first. Together they enumerate every page the signatory signs, which is
+    /// how eDrafter's own dashboard implements "signature on all pages": it sends no
+    /// all-pages flag at all, just a box per page.
+    /// </summary>
+    public List<EsignPlaceholderDto>? ExtraPlaceholders { get; set; }
+}
+
+/// <summary>
+/// A signature box, as fractions of the page (0–1) with a TOP-LEFT origin — yNorm 0 is the
+/// top of the page. Being normalised, the same values land identically on A4 and Letter.
+///
+/// eDrafter does not validate these: a placeholder on page 99 of a 2-page PDF was accepted
+/// with 201 and silently dropped. Validate page numbers before sending.
+/// </summary>
+public sealed class EsignPlaceholderDto
+{
+    public int Page { get; set; }
+    public decimal XNorm { get; set; }
+    public decimal YNorm { get; set; }
+    public decimal WNorm { get; set; }
+    public decimal HNorm { get; set; }
 }
 
 // ---- Responses ------------------------------------------------------------
@@ -373,3 +517,9 @@ public sealed class EsignSignedEnvelope
     /// <summary>Absolute URL on eDrafter's uploads host. Follow it for the real PDF.</summary>
     public string? SignedUrl { get; set; }
 }
+
+/// <summary>
+/// eDrafter refused to price the document — the amount is below the article's minimum, or
+/// the wrong amount field was sent. The message is eDrafter's own and is fit to show a user.
+/// </summary>
+public sealed class StampDutyException(string message) : Exception(message);

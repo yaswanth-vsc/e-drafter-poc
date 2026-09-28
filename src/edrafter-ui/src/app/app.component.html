@@ -159,17 +159,26 @@
                   <td>Order total</td>
                   <td class="num">₹{{ q.order.total | number:'1.2-2' }}</td>
                 </tr>
-                <tr>
-                  <td>
-                    e-Sign <small>₹{{ q.esign.ratePerSignatory }} × {{ q.esign.signatories }} signatories
-                    · {{ q.esign.signMethod }} · no GST</small>
-                  </td>
-                  <td class="num">₹{{ q.esign.total | number:'1.2-2' }}</td>
-                </tr>
-                <tr class="total">
-                  <td>Total</td>
-                  <td class="num">₹{{ q.grandTotal | number:'1.2-2' }}</td>
-                </tr>
+                @if (q.esign; as e) {
+                  <tr>
+                    <td>
+                      e-Sign <small>₹{{ e.ratePerSignatory }} × {{ e.signatories }} signatories
+                      · {{ e.signMethod }} · no GST</small>
+                    </td>
+                    <td class="num">₹{{ e.total | number:'1.2-2' }}</td>
+                  </tr>
+                  <tr class="total">
+                    <td>Total</td>
+                    <td class="num">₹{{ q.grandTotal | number:'1.2-2' }}</td>
+                  </tr>
+                }
+                @if (q.signing; as sg) {
+                  <tr class="note-row">
+                    <td colspan="2">
+                      <small>Signing: Zoho Sign · {{ sg.method }} · {{ sg.order }}. {{ sg.note }}</small>
+                    </td>
+                  </tr>
+                }
               </tbody>
             </table>
 
@@ -194,7 +203,7 @@
                 {{ busy() ? 'Placing…' : 'Place order · ₹' + (q.order.total | number:'1.2-2') }}
               </button>
               <p class="hint">
-                The e-sign charge comes later, after the stamp arrives — you will confirm it separately.
+                Signing comes later, after the stamp arrives — you will confirm it separately.
               </p>
             </div>
           } @else {
@@ -228,7 +237,7 @@
                 eDrafter what actually happened.
               </p>
               <button class="btn" (click)="reconcile()" [disabled]="busy()">
-                {{ busy() ? 'Checking…' : 'Reconcile with eDrafter' }}
+                {{ busy() ? 'Checking…' : 'Reconcile' }}
               </button>
             </div>
           }
@@ -273,12 +282,16 @@
                 }
               </div>
             </li>
-            <li [class.done]="a.esignDocumentId">
+            <li [class.done]="a.sentForSigning">
               <span class="dot"></span>
               <div>
                 <strong>Sent for signing</strong>
-                @if (a.esignDocumentId) {
+                @if (a.zohoSubmittedAt) {
+                  <small>Zoho Sign · Aadhaar eSign · {{ a.secondParty.name }} first, then {{ a.firstParty.name }}</small>
+                } @else if (a.esignDocumentId) {
                   <small>Charged ₹{{ a.esignCost | number:'1.2-2' }} · non-refundable</small>
+                } @else if (a.zohoRequestId) {
+                  <small>Zoho draft created (not sent yet)</small>
                 } @else {
                   <small>Not yet sent</small>
                 }
@@ -288,35 +301,58 @@
               <span class="dot"></span>
               <div>
                 <strong>Signed by all parties</strong>
-                @if (a.status === 'Signed') {
+                @if (a.status === 'Signed' && a.hasSignedPdf) {
                   <a class="link" [href]="signedPdfUrl(a.id)" target="_blank">download signed PDF</a>
+                } @else if (a.status === 'Signed') {
+                  <small>Signed — downloading the PDF from Zoho</small>
                 }
               </div>
             </li>
           </ol>
 
           <!-- Second spend gate — only once the stamp exists -->
-          @if (a.status === 'StampReady' && !a.esignDocumentId) {
+          @if ((a.status === 'StampReady' || a.status === 'Preparing') && !a.sentForSigning) {
             <div class="spend-gate danger">
               <h3>Step 2 of 2 — send for signing</h3>
               @if (quote(); as q) {
-                <p class="warn">{{ q.esign.confirmation }}</p>
-                <label class="check">
-                  <input type="checkbox" [checked]="confirmSend()"
-                         (change)="confirmSend.set(!confirmSend())">
-                  I understand this charges ₹{{ q.esign.total | number:'1.2-2' }} and is not refunded
-                  if a signatory declines
-                </label>
-                <button class="btn spend" (click)="sendForSigning()"
-                        [disabled]="!confirmSend() || busy()">
-                  {{ busy() ? 'Sending…' : 'Send to ' + q.esign.signatories + ' signatories · ₹' + (q.esign.total | number:'1.2-2') }}
-                </button>
+                @if (q.signing; as sg) {
+                  <p class="warn">{{ sg.confirmation }}</p>
+                  <label class="check">
+                    <input type="checkbox" [checked]="confirmSend()"
+                           (change)="confirmSend.set(!confirmSend())">
+                    I understand this uses Zoho credits and is not refunded if a party declines
+                  </label>
+                  <button class="btn spend" (click)="sendForSigning()"
+                          [disabled]="!confirmSend() || busy()">
+                    {{ busy() ? 'Sending…' : 'Send to Zoho Sign · Aadhaar eSign · 2 signers' }}
+                  </button>
+                  <p class="hint">
+                    <a [href]="signingPreviewUrl(a.id)" target="_blank">Preview the signature boxes</a>
+                    (stamp paper + agreement, both corners on every page) ·
+                    <a [href]="finalPdfUrl(a.id)" target="_blank">final PDF</a>.
+                    Previews are built here and send nothing to Zoho.
+                  </p>
+                } @else {
+                  @if (q.esign; as e) {
+                    <p class="warn">{{ e.confirmation }}</p>
+                    <label class="check">
+                      <input type="checkbox" [checked]="confirmSend()"
+                             (change)="confirmSend.set(!confirmSend())">
+                      I understand this charges ₹{{ e.total | number:'1.2-2' }} and is not refunded
+                      if a signatory declines
+                    </label>
+                    <button class="btn spend" (click)="sendForSigning()"
+                            [disabled]="!confirmSend() || busy()">
+                      {{ busy() ? 'Sending…' : 'Send to ' + e.signatories + ' signatories · ₹' + (e.total | number:'1.2-2') }}
+                    </button>
+                    <p class="hint">
+                      <a [href]="pdfUrl(a.id)" target="_blank">Preview the agreement</a> before sending.
+                    </p>
+                  }
+                }
               } @else {
                 <button class="link" (click)="loadQuote(a.id)">load the cost</button>
               }
-              <p class="hint">
-                <a [href]="pdfUrl(a.id)" target="_blank">Preview the agreement</a> before sending.
-              </p>
             </div>
           }
 
@@ -326,8 +362,15 @@
               @for (s of a.signatories; track s.email) {
                 <div class="sig">
                   <div>
-                    <strong>{{ s.name }}</strong>
-                    <small>{{ s.email }}</small>
+                    <strong>
+                      @if (s.signingOrder) { {{ s.signingOrder }}. }
+                      {{ s.name }}
+                    </strong>
+                    <small>
+                      {{ s.email }}
+                      @if (s.role === 'first') { · first party · signs bottom-left }
+                      @if (s.role === 'second') { · second party · signs bottom-right }
+                    </small>
                   </div>
                   <div class="sig-right">
                     <span class="status" [class]="statusClass(s.status === 'signed' ? 'Signed' : 'Pending')">
@@ -339,7 +382,7 @@
                   </div>
                 </div>
               }
-              @if (a.esignDocumentId && a.status !== 'Signed') {
+              @if (a.sentForSigning && a.status !== 'Signed') {
                 <button class="link" (click)="refreshSigning()" [disabled]="busy()">
                   refresh signing status
                 </button>

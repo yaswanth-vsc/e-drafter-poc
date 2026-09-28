@@ -34,7 +34,14 @@ public sealed class SpendAttempt
     public DateTime? ResolvedAt { get; set; }
 }
 
-public enum SpendKind { Order = 0, Esign = 1 }
+public enum SpendKind
+{
+    Order = 0,
+    Esign = 1,
+
+    /// <summary>Zoho Sign POST /requests/{id}/submit — consumes Zoho credits.</summary>
+    ZohoEsign = 2
+}
 
 public enum SpendStatus
 {
@@ -97,6 +104,27 @@ public sealed class Agreement
     public string? StampPdfPath { get; set; }
     public string? SignedPdfPath { get; set; }
 
+    // ---- Zoho Sign ----------------------------------------------------------
+    //
+    // All nullable so SchemaUpgrader can add them to an existing database with a plain
+    // ALTER TABLE, without having to pick a default for rows that predate them.
+
+    /// <summary>"zoho" or "edrafter". Null on rows created before signing moved to Zoho.</summary>
+    public string? SigningProvider { get; set; }
+
+    /// <summary>The stamp paper followed by the agreement — the file uploaded to Zoho.</summary>
+    public string? FinalPdfPath { get; set; }
+
+    /// <summary>Set when the free Zoho draft is created, BEFORE anything is charged.</summary>
+    public string? ZohoRequestId { get; set; }
+    public string? ZohoDocumentId { get; set; }
+
+    /// <summary>Signature fields are added once; a second PUT would duplicate every box.</summary>
+    public DateTime? ZohoFieldsPlacedAt { get; set; }
+
+    /// <summary>Set only after /submit succeeded — the point credits were consumed.</summary>
+    public DateTime? ZohoSubmittedAt { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
 
@@ -143,6 +171,15 @@ public sealed class Signatory
     public string Status { get; set; } = "pending";
     public string? SignUrl { get; set; }
     public DateTime? SignedAt { get; set; }
+
+    /// <summary>"first" or "second" party. Decides the signature corner and sign order.</summary>
+    public string? Role { get; set; }
+
+    /// <summary>Zoho signing_order: the second party is 1, the first party is 2.</summary>
+    public int? SigningOrder { get; set; }
+
+    /// <summary>Minted by Zoho when the draft is created; needed for fields and submit.</summary>
+    public string? ZohoActionId { get; set; }
 }
 
 /// <summary>

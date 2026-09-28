@@ -21,6 +21,7 @@ public sealed class Reconciler(
     AppDbContext db,
     EDrafterApiClient client,
     SpendLedger ledger,
+    ZohoSigningService zohoSigning,
     ILogger<Reconciler> logger)
 {
     public async Task<List<ReconcileResult>> ReconcileAllAsync(CancellationToken ct = default)
@@ -36,6 +37,7 @@ public sealed class Reconciler(
                 {
                     SpendKind.Order => await ReconcileOrderAsync(attempt, ct),
                     SpendKind.Esign => await ReconcileEsignAsync(attempt, ct),
+                    SpendKind.ZohoEsign => await zohoSigning.ReconcileAsync(attempt, ct),
                     _ => new ReconcileResult(attempt.Id, attempt.Kind, false, "Unknown kind")
                 });
             }

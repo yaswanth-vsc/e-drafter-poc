@@ -8,6 +8,7 @@ appsettings.*.Local.json
 .env.*
 secrets.json
 *whsec*
+webhook-secret.txt
 *.pem
 *.key
 
@@ -26,6 +27,7 @@ lease-agreement.pdf
 signed-agreement.pdf
 test-2page.pdf
 src/*.pdf
+/*.pdf
 
 # ─── Commercial and contractual documents ────────────────────────────────
 # eDrafter's negotiated rates and the signed contract with VSoftware
@@ -46,10 +48,14 @@ eDrafter-B2B-API-Documentation.pdf
 #   13-API-EXAMPLES.md      every endpoint, with a working request
 #   18-THE-FLOW.md          what the system does
 #   19-SETUP-AND-CONFIG.md  how to run it, configure it, register webhooks
+#   21-WEBHOOKS.md          registering and testing the eDrafter + Zoho webhooks
+#   22-HOW-TO-RUN.md        running it, what costs money, endpoints
 docs/*
 !docs/13-API-EXAMPLES.md
 !docs/18-THE-FLOW.md
 !docs/19-SETUP-AND-CONFIG.md
+!docs/21-WEBHOOKS.md
+!docs/22-HOW-TO-RUN.md
 
 # ─── .NET ────────────────────────────────────────────────────────────────
 bin/

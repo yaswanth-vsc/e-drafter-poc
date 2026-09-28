@@ -2,7 +2,9 @@ using EDrafter.Api.Data;
 using EDrafter.Api.EDrafterClient;
 using EDrafter.Api.Hubs;
 using EDrafter.Api.Services;
+using EDrafter.Api.Zoho;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -48,10 +50,36 @@ builder.Services.AddHttpClient<EDrafterApiClient>((sp, http) =>
 
 builder.Services.AddTransient<EDrafterLoggingHandler>();
 
+// ---------------------------------------------------------------------------
+// Zoho Sign — signing only; the stamp still comes from eDrafter.
+//
+// Same rule as eDrafter: NO retry policy. POST /requests/{id}/submit consumes credits and
+// is not idempotent. Nothing calls Zoho at startup; the first call is a user pressing
+// Send, and /submit additionally needs Zoho:ArmSpending = true.
+// ---------------------------------------------------------------------------
+builder.Services.Configure<ZohoOptions>(builder.Configuration.GetSection(ZohoOptions.Section));
+
+if (string.Equals(builder.Configuration["Zoho:AuthMode"], ZohoAuthModes.DevToken, StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddSingleton<IZohoTokenProvider, ZohoStaticTokenProvider>();
+else
+    builder.Services.AddSingleton<IZohoTokenProvider, ZohoRefreshTokenProvider>();
+
+builder.Services.AddHttpClient<ZohoSignClient>((sp, http) =>
+{
+    var o = sp.GetRequiredService<IOptions<ZohoOptions>>().Value;
+    http.BaseAddress = new Uri(o.BaseUrl.EndsWith('/') ? o.BaseUrl : o.BaseUrl + "/");
+    http.Timeout = TimeSpan.FromSeconds(o.TimeoutSeconds);
+});
+
+builder.Services.AddSingleton<PdfComposer>();
+builder.Services.AddScoped<ZohoSigningService>();
+builder.Services.AddScoped<ZohoWebhookProcessor>();
+
 builder.Services.AddScoped<SpendGuard>();
 builder.Services.AddScoped<SpendLedger>();
 builder.Services.AddScoped<DutyCalculator>();
 builder.Services.AddScoped<EsignPricing>();
+builder.Services.AddSingleton<SignaturePlacementInspector>();
 builder.Services.AddScoped<AgreementService>();
 builder.Services.AddScoped<Reconciler>();
 builder.Services.AddSingleton<AgreementPdfBuilder>();
@@ -82,6 +110,9 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.EnsureCreatedAsync();
+
+    // EnsureCreated never alters an existing database; this adds the Zoho columns to one.
+    await SchemaUpgrader.UpgradeAsync(db, scope.ServiceProvider.GetRequiredService<ILogger<Program>>());
 }
 
 app.UseCors();
@@ -92,20 +123,39 @@ var armed = app.Configuration.GetValue("EDrafter:ArmSpending", false);
 log.LogWarning("eDrafter POC API starting. Mode={Mode} ArmSpending={Armed} BaseUrl={Url}",
     mode, armed, app.Configuration["EDrafter:BaseUrl"]);
 
+var zohoOptions = app.Services.GetRequiredService<IOptions<ZohoOptions>>().Value;
+log.LogWarning(
+    "Signing provider={Provider}. Zoho: BaseUrl={Url} Credentials={Creds} ArmSpending={Armed} " +
+    "Providers=[{Ids}] Fields={Shape}/{Coords} WebhookSecret={Secret}",
+    app.Configuration["Signing:Provider"] ?? "zoho", zohoOptions.BaseUrl,
+    zohoOptions.HasCredentials ? "set" : "MISSING", zohoOptions.ArmSpending,
+    string.Join(",", zohoOptions.EffectiveCloudProviderIds), zohoOptions.FieldsShape, zohoOptions.CoordinateMode,
+    string.IsNullOrWhiteSpace(zohoOptions.WebhookSecret) ? "not set" : "set");
+
 var api = app.MapGroup("/api");
 
 // ---------------------------------------------------------------------------
 // Health and spend status
 // ---------------------------------------------------------------------------
-api.MapGet("/health", async (EDrafterApiClient client, SpendGuard guard, CancellationToken ct) =>
+api.MapGet("/health", async (EDrafterApiClient client, SpendGuard guard, IServiceProvider sp, CancellationToken ct) =>
 {
     var account = await client.GetAccountAsync(ct);
     var summary = await guard.SummaryAsync(ct);
+    var zo = sp.GetRequiredService<IOptions<ZohoOptions>>().Value;
     return Results.Ok(new
     {
         ok = true,
         edrafter = new { account?.Company, account?.Balance },
-        spend = summary
+        spend = summary,
+        // Configuration only — this does not call Zoho.
+        zoho = new
+        {
+            provider = sp.GetRequiredService<IConfiguration>()["Signing:Provider"] ?? "zoho",
+            credentials = zo.HasCredentials,
+            armed = zo.ArmSpending,
+            allowedCloudProviderIds = zo.EffectiveCloudProviderIds,
+            webhookSecret = !string.IsNullOrWhiteSpace(zo.WebhookSecret)
+        }
     });
 });
 
@@ -132,8 +182,21 @@ api.MapGet("/rules", async (EDrafterApiClient client, IConfiguration cfg, Cancel
 api.MapPost("/agreements", async (
     CreateAgreementInput input, AgreementService svc, CancellationToken ct) =>
 {
-    var a = await svc.CreateDraftAsync(input, ct);
-    return Results.Created($"/api/agreements/{a.Id}", ToDto(a));
+    try
+    {
+        var a = await svc.CreateDraftAsync(input, ct);
+        return Results.Created($"/api/agreements/{a.Id}", ToDto(a));
+    }
+    catch (StampDutyException ex)
+    {
+        // eDrafter declined to price it — the amount is below the article's minimum.
+        // Their wording is written for end users, so pass it through as a 400 rather
+        // than letting it surface as a 500 with a stack trace.
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["considerationAmount"] = [ex.Message]
+        });
+    }
 });
 
 api.MapGet("/agreements", async (AgreementService svc, CancellationToken ct) =>
@@ -156,11 +219,17 @@ api.MapGet("/agreements/{id:guid}/quote", async (Guid id, AgreementService svc, 
             duty = new
             {
                 article = q.Duty.ArticleCode,
-                consideration = q.Duty.ConsiderationAmount,
-                pct = q.Duty.Pct,
-                cap = q.Duty.CapRupees,
+                consideration = q.Duty.Amount,
                 amount = q.Duty.Duty,
-                wasCapped = q.Duty.WasCapped,
+                basis = q.Duty.Basis,
+                pct = q.Duty.Rule?.Percent,
+                cap = q.Duty.Rule?.Max,
+                minInput = q.Duty.Rule?.MinInput,
+                requires = q.Duty.Rule?.Requires,
+
+                // False means the figure did not come from eDrafter, so the order may be
+                // charged something else. Surfaced so the UI can say so.
+                fromEDrafter = q.Duty.FromEDrafter,
                 warning = q.Duty.Warning
             },
             order = new
@@ -171,7 +240,8 @@ api.MapGet("/agreements/{id:guid}/quote", async (Guid id, AgreementService svc, 
                 gst = q.Gst,
                 total = q.OrderTotal
             },
-            esign = new
+            // Null for Zoho: its cost is not in the quote yet.
+            esign = q.Esign is null ? null : new
             {
                 signMethod = q.Esign.SignMethod,
                 signatories = q.Esign.SignatoryCount,
@@ -180,6 +250,20 @@ api.MapGet("/agreements/{id:guid}/quote", async (Guid id, AgreementService svc, 
                 gst = "not charged on e-sign",
                 confirmation = q.Esign.ConfirmationText
             },
+            signing = q.SigningProvider == ZohoSigningService.Provider
+                ? new
+                {
+                    provider = "zoho",
+                    method = "Aadhaar eSign",
+                    order = "Second party signs first, then first party",
+                    note = "Zoho Sign cost is not included in this quote.",
+                    confirmation =
+                        "This sends the stamped agreement to Zoho Sign. The second party is emailed first; " +
+                        "the first party only after the second party has signed. Both must sign with Aadhaar " +
+                        "eSign. It uses Zoho credits, which are not refunded if a party declines or the " +
+                        "request expires."
+                }
+                : null,
             grandTotal = q.GrandTotal,
             walletBalance = q.WalletBalance,
             affordable = q.Affordable
@@ -213,9 +297,50 @@ api.MapPost("/agreements/{id:guid}/send-for-signing", async (
     });
 });
 
-api.MapPost("/agreements/{id:guid}/refresh-signing", async (Guid id, AgreementService svc, CancellationToken ct) =>
+/// The signature layout, checked for overlap. Free — sends nothing, spends nothing.
+/// Call it before send-for-signing: eDrafter returns 201 for an overlapping layout just
+/// as it does for a correct one, and the e-sign fee is not refunded.
+api.MapPost("/agreements/{id:guid}/placement-preview", async (
+    Guid id, SendForSigningRequest body, AgreementService svc, CancellationToken ct) =>
 {
-    await svc.RefreshSigningStatusAsync(id, ct);
+    try
+    {
+        var report = await svc.PreviewPlacementAsync(id, body.DocumentBase64, ct);
+        return Results.Ok(new
+        {
+            pageCount = report.PageCount,
+            totalBoxes = report.TotalBoxes,
+            hasOverlap = report.HasOverlap,
+            summary = report.Summary,
+            issues = report.Issues.Select(i => new
+            {
+                kind = i.Kind,
+                page = i.Page,
+                signatories = i.Signatories,
+                message = i.Message
+            }),
+            pages = report.Pages.Select(p => new
+            {
+                page = p.Page,
+                boxes = p.Boxes.Select(b => new
+                {
+                    signatory = b.Signatory,
+                    xNorm = b.XNorm, yNorm = b.YNorm, wNorm = b.WNorm, hNorm = b.HNorm
+                })
+            })
+        });
+    }
+    catch (KeyNotFoundException) { return Results.NotFound(); }
+});
+
+api.MapPost("/agreements/{id:guid}/refresh-signing", async (
+    Guid id, AgreementService svc, ZohoSigningService zoho, CancellationToken ct) =>
+{
+    var current = await svc.LoadAsync(id, ct);
+    if (current.ZohoRequestId is not null)
+        await zoho.RefreshAsync(id, ct);
+    else
+        await svc.RefreshSigningStatusAsync(id, ct);
     return Results.Ok(ToDto(await svc.LoadAsync(id, ct)));
 });
 
@@ -284,9 +409,19 @@ api.MapGet("/agreements/{id:guid}/stamp-pdf", async (
 /// 💸 SPENDS. Generates the PDF and sends it in one step, so the caller never
 /// has to handle base64 or risk sending a stale document.
 api.MapPost("/agreements/{id:guid}/prepare-and-send", async (
-    Guid id, AgreementService svc, DocumentService docs, AppDbContext db, CancellationToken ct) =>
+    Guid id, AgreementService svc, DocumentService docs, AppDbContext db,
+    ZohoSigningService zoho, IConfiguration cfg, CancellationToken ct) =>
 {
     var a = await svc.LoadAsync(id, ct);
+
+    // Zoho: stamp paper + agreement, signature boxes on every page, Aadhaar eSign only,
+    // second party first. Draft and boxes are free; the submit needs Zoho:ArmSpending.
+    if (UsesZoho(a, cfg))
+    {
+        var zohoOutcome = await zoho.SendAsync(id, ct);
+        return OutcomeToResult(zohoOutcome, o => new { zohoRequestId = o.RequestId, requestStatus = o.RequestStatus });
+    }
+
     var doc = docs.BuildAgreementDocument(a);
 
     if (!doc.Success)
@@ -301,6 +436,110 @@ api.MapPost("/agreements/{id:guid}/prepare-and-send", async (
         documentId = o.DocumentId,
         signatories = o.Signatories.Select(s => new { s.Name, s.Email, s.SignUrl })
     });
+});
+
+// ---------------------------------------------------------------------------
+// Zoho signing previews — local only, no Zoho call, nothing spent
+// ---------------------------------------------------------------------------
+
+/// The exact file that would be uploaded to Zoho: stamp paper + agreement.
+api.MapGet("/agreements/{id:guid}/final-pdf", async (Guid id, ZohoSigningService zoho, CancellationToken ct) =>
+{
+    try
+    {
+        var p = await zoho.PreviewAsync(id, drawBoxes: false, ct);
+        return Results.File(p.Pdf, "application/pdf", $"final-{id}.pdf");
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+/// The final PDF with every signature box drawn and labelled — check the corners by eye.
+api.MapGet("/agreements/{id:guid}/signing-preview", async (Guid id, ZohoSigningService zoho, CancellationToken ct) =>
+{
+    try
+    {
+        var p = await zoho.PreviewAsync(id, drawBoxes: true, ct);
+        return Results.File(p.Pdf, "application/pdf", $"signing-preview-{id}.pdf");
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+/// The same layout as numbers: pages, sizes, every box in points, and the overlap check.
+api.MapGet("/agreements/{id:guid}/signing-layout", async (Guid id, ZohoSigningService zoho, CancellationToken ct) =>
+{
+    try
+    {
+        var p = await zoho.PreviewAsync(id, drawBoxes: false, ct);
+        return Results.Ok(new
+        {
+            pageCount = p.Composed.Pages.Count,
+            stampPages = p.Composed.StampPageCount,
+            sizeBytes = p.Composed.Bytes.Length,
+            hasOverlap = p.Report.HasOverlap,
+            summary = p.Report.Summary,
+            pages = p.Composed.Pages.Select((size, i) => new
+            {
+                page = i + 1,
+                kind = i < p.Composed.StampPageCount ? "stamp" : "agreement",
+                width = Math.Round(size.Width, 1),
+                height = Math.Round(size.Height, 1),
+                boxes = p.Boxes.Where(b => b.PageIndex == i).Select(b => new
+                {
+                    party = b.Role,
+                    x = Math.Round(b.X, 1), y = Math.Round(b.Y, 1),
+                    width = b.W, height = b.H
+                })
+            })
+        });
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+/// Forget an unsent Zoho draft so the next send uploads a fresh one. Local only — delete
+/// the old draft in Zoho Sign by hand. Refused once the request has been submitted.
+api.MapPost("/agreements/{id:guid}/zoho/reset-draft", async (Guid id, ZohoSigningService zoho, CancellationToken ct) =>
+{
+    var refused = await zoho.ResetDraftAsync(id, ct);
+    return refused is null
+        ? Results.Ok(new { reset = true, note = "Delete the old draft in Zoho Sign, then send again." })
+        : Results.Conflict(new { reset = false, error = refused });
+});
+
+// ---------------------------------------------------------------------------
+// Zoho Sign webhook receiver
+//
+// Raw body, for the HMAC. 200 for anything authenticated, even if handling fails —
+// Zoho disables a webhook after repeated failures. Polling covers a lost event.
+// ---------------------------------------------------------------------------
+app.MapPost("/webhooks/zoho-sign", async (
+    HttpRequest request, ZohoWebhookProcessor processor, ILoggerFactory loggerFactory, CancellationToken ct) =>
+{
+    var hookLog = loggerFactory.CreateLogger("Zoho.Webhook");
+
+    using var reader = new StreamReader(request.Body);
+    var rawBody = await reader.ReadToEndAsync(ct);
+
+    hookLog.LogInformation("ZOHO WEBHOOK IN from={Ip}\n  body: {Body}",
+        request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        string.IsNullOrWhiteSpace(rawBody) ? "(empty)" : rawBody);
+
+    if (!processor.Verify(rawBody,
+            request.Headers[ZohoWebhookProcessor.SignatureHeader].ToString(),
+            request.Headers[ZohoWebhookProcessor.TimestampHeader].ToString()))
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var processed = await processor.ProcessAsync(rawBody, ct);
+        return Results.Ok(new { received = true, processed });
+    }
+    catch (Exception ex)
+    {
+        hookLog.LogError(ex, "Zoho webhook authenticated but handling failed. Polling will catch up.");
+        return Results.Ok(new { received = true, processed = false });
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -389,10 +628,17 @@ static object ToDto(Agreement a) => new
     certificateNo = a.CertificateNo,
     esignDocumentId = a.EsignDocumentId,
     esignCost = a.EsignCostPaise.HasValue ? a.EsignCostPaise.Value / 100m : (decimal?)null,
-    signatories = a.Signatories.Select(s => new
-    {
-        s.Name, s.Email, s.Phone, s.Status, s.SignUrl, s.SignedAt
-    }),
+    signingProvider = a.SigningProvider,
+    zohoRequestId = a.ZohoRequestId,
+    zohoSubmittedAt = a.ZohoSubmittedAt,
+    sentForSigning = a.EsignDocumentId is not null || a.ZohoSubmittedAt is not null,
+    hasSignedPdf = a.SignedPdfPath is not null,
+    signatories = a.Signatories
+        .OrderBy(s => s.SigningOrder ?? int.MaxValue)
+        .Select(s => new
+        {
+            s.Name, s.Email, s.Phone, s.Status, s.SignUrl, s.SignedAt, s.Role, s.SigningOrder
+        }),
     createdAt = a.CreatedAt,
     updatedAt = a.UpdatedAt
 };
@@ -412,7 +658,7 @@ static IResult OutcomeToResult<T>(SpendOutcome<T> outcome, Func<T, object> proje
         {
             status = "failed_safe",
             message = outcome.Message,
-            note = "Rejected by eDrafter. No money moved — safe to correct and try again."
+            note = "Rejected by the provider. No money moved — safe to correct and try again."
         }),
 
         SpendResultKind.Unknown => Results.Json(new
@@ -441,5 +687,11 @@ static IResult OutcomeToResult<T>(SpendOutcome<T> outcome, Func<T, object> proje
 
         _ => Results.Problem("Unhandled spend outcome")
     };
+
+/// Zoho unless the agreement already went (or was set) to eDrafter for signing.
+static bool UsesZoho(Agreement a, IConfiguration cfg) =>
+    a.EsignDocumentId is null &&
+    string.Equals(a.SigningProvider ?? cfg["Signing:Provider"] ?? ZohoSigningService.Provider,
+        ZohoSigningService.Provider, StringComparison.OrdinalIgnoreCase);
 
 public sealed record SendForSigningRequest(string DocumentBase64);

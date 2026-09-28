@@ -115,6 +115,9 @@ public sealed class WebhookProcessor(
                 case "order.completed":
                     await HandleOrderCompletedAsync(payload, ct);
                     break;
+                case "order.cancelled":
+                    await HandleOrderCancelledAsync(payload, ct);
+                    break;
                 case "esign.completed":
                     await HandleEsignCompletedAsync(payload, ct);
                     break;
@@ -227,6 +230,58 @@ public sealed class WebhookProcessor(
         }, ct);
     }
 
+    /// <summary>
+    /// An order was cancelled — by us via the API, by eDrafter's ops team, or from their
+    /// dashboard. eDrafter only began firing this on all three paths in September 2026;
+    /// before that a dashboard cancellation was silent, so absence of this event is not
+    /// evidence an order is still live. Polling remains the backstop.
+    /// </summary>
+    private async Task HandleOrderCancelledAsync(WebhookPayload payload, CancellationToken ct)
+    {
+        var orderId = payload.Data?.OrderId;
+        var reference = payload.Data?.Reference;
+
+        // Match on the order id, falling back to our own refId when it is absent.
+        var agreement = await db.Agreements
+            .Where(a => (orderId != null && a.OrderIdd == orderId)
+                     || (orderId == null && reference != null && a.RefId == reference))
+            .OrderByDescending(a => a.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+
+        if (agreement is null)
+        {
+            logger.LogWarning(
+                "order.cancelled for order {OrderId} / ref {Reference}, which we do not track.",
+                orderId, reference);
+            return;
+        }
+
+        agreement.Status = AgreementStatus.Cancelled;
+        agreement.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        // externalRefundDue distinguishes "already back in the wallet" from "eDrafter owes
+        // us a settlement offline". The latter needs a human, so say so plainly in the log.
+        var externalDue = payload.Data?.ExternalRefundDue == true;
+        logger.LogInformation(
+            "Order {OrderId} ({Reference}) cancelled at {CancelledAt}. Refund {Refund} — {Route}.",
+            orderId, reference, payload.Data?.CancelledAt, payload.Data?.Refund,
+            externalDue
+                ? "settlement due OUTSIDE the wallet, needs finance follow-up"
+                : "credited back to the wallet, verify via GET /transactions");
+
+        await hub.Clients.All.SendAsync("AgreementUpdated", new
+        {
+            id = agreement.Id,
+            status = agreement.Status.ToString(),
+            refund = payload.Data?.Refund,
+            externalRefundDue = externalDue,
+            message = externalDue
+                ? "Order cancelled. A refund is due separately — finance will follow up."
+                : "Order cancelled. The refund has been credited back to your wallet."
+        }, ct);
+    }
+
     private async Task HandleEsignCompletedAsync(WebhookPayload payload, CancellationToken ct)
     {
         var documentId = payload.Data?.DocumentId;
@@ -288,4 +343,18 @@ public sealed class WebhookData
     public string? Status { get; set; }
     public int? StampCount { get; set; }
     public string? SignedUrl { get; set; }
+
+    // order.cancelled. `Reference` is our own refId echoed back, so a cancellation can be
+    // matched even when the order id is missing.
+    public string? Reference { get; set; }
+    public DateTime? CancelledAt { get; set; }
+    public decimal? Refund { get; set; }
+
+    /// <summary>
+    /// False when the order was wallet-funded — eDrafter has already credited the wallet,
+    /// verifiable via GET /transactions. True when it was paid by direct/external payment
+    /// and a settlement is still owed offline; only then does the order's refundStatus
+    /// read "due".
+    /// </summary>
+    public bool? ExternalRefundDue { get; set; }
 }

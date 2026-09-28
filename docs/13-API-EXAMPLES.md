@@ -664,6 +664,12 @@ curl -X POST "$BASE/esign" \
 | `expiryDays` | number | — | Link validity, default 7 |
 | `signaturePosition` | string | — | `bottom-right` (default) \| `bottom-left` \| `top-right` \| `top-left` |
 | `signaturePage` | number | — | Default: last page |
+| `signAllPages` | bool | — | Repeats **every** signatory's signature on **every** page |
+| `signatories[].allPages` | bool | — | Same, but for **one** signatory only |
+| `signatories[].extraPlaceholders` | array | — | Exact spots: `{ page, xNorm, yNorm, wNorm, hNorm }`, values `0`–`1`, **top-left origin** |
+
+See [Signature placement](#signature-placement--all-pages-and-per-signatory-) below for
+worked examples of all three.
 
 **Response 200**
 ```json
@@ -684,16 +690,117 @@ curl -X POST "$BASE/esign" \
 eDrafter emails each signatory **and** returns `signUrl` — so you can deliver the links
 yourself (in-app, WhatsApp, your own email) instead of relying on their mail.
 
-> ### ⚠️ Two hard limits that shape the UI
+> ### ⚠️ `documentBase64` is capped at ~700KB
 >
-> **1. Signature placement is four corners only.** There are no x/y coordinates, and
-> `signaturePosition` / `signaturePage` are **top-level, not per-signatory** — every signatory
-> signs in the same corner of the same page. A drag-and-drop placeholder UI is **not possible**
-> with this API as documented.
+> The request body limit is 1MB and base64 inflates by ~33%, so the practical ceiling is
+> **~512KB of actual PDF**. There is no multipart upload endpoint. Validate size at upload
+> time and compress before encoding.
 >
-> **2. `documentBase64` is capped at ~700KB** (1MB request body limit) ≈ **~512KB of actual
-> PDF**, since base64 inflates by ~33%. There is no multipart upload endpoint. Validate size at
-> upload time and compress before encoding.
+> The **dashboard** accepts up to 25MB. To sign a larger document through the API, sign an
+> existing e-stamp with `orderId` + `stampId` and omit `documentBase64` — that path has no
+> size limit. eDrafter will raise the API cap per-account on request.
+
+---
+
+## Signature placement — all pages and per signatory ⭐
+
+Signature placement used to be four corners only, one position for everyone. eDrafter added
+per-signatory and coordinate placement in September 2026. There are now **three** levers,
+coarse to fine. They compose: `extraPlaceholders` are added *on top of* whatever
+`signaturePosition` / `allPages` already produced.
+
+**Verified against the live API on 2026-09-22** with a 2-page PDF — all three forms were
+accepted (HTTP 201).
+
+### 1. One signature, chosen corner and page — the default
+
+```json
+{
+  "signaturePosition": "bottom-right",
+  "signaturePage": 2
+}
+```
+
+`signaturePosition` is one of `bottom-right` (default), `bottom-left`, `top-right`,
+`top-left`. `signaturePage` defaults to the **last** page. Both are top-level, so they apply
+to every signatory.
+
+### 2. Every signatory on every page — `signAllPages`
+
+```json
+{
+  "name": "Rent Agreement",
+  "signMethod": "phone_otp",
+  "documentName": "agreement.pdf",
+  "documentBase64": "JVBERi0xLjQK...",
+  "signAllPages": true,
+  "signaturePosition": "bottom-right",
+  "signatories": [
+    { "name": "Raj Kumar", "email": "raj@example.com", "phone": "9876543210" },
+    { "name": "Priya Sen", "email": "priya@example.com", "phone": "9876543211" }
+  ]
+}
+```
+
+Repeats **both** signatories' signatures on **every** page, in the corner given by
+`signaturePosition`. This is the API equivalent of the dashboard's "signature on all pages"
+checkbox.
+
+### 3. Per signatory — `allPages` and `extraPlaceholders`
+
+This is the answer to *"how do I change the position for one signatory?"* — move the field
+from the top level down into the signatory object.
+
+```json
+{
+  "name": "Rent Agreement",
+  "signMethod": "phone_otp",
+  "documentName": "agreement.pdf",
+  "documentBase64": "JVBERi0xLjQK...",
+  "signaturePosition": "bottom-right",
+  "signaturePage": 1,
+  "signatories": [
+    {
+      "name": "Raj Kumar",
+      "email": "raj@example.com",
+      "phone": "9876543210",
+      "allPages": true
+    },
+    {
+      "name": "Priya Sen",
+      "email": "priya@example.com",
+      "phone": "9876543211",
+      "allPages": false,
+      "extraPlaceholders": [
+        { "page": 2, "xNorm": 0.55, "yNorm": 0.35, "wNorm": 0.30, "hNorm": 0.08 }
+      ]
+    }
+  ]
+}
+```
+
+Raj signs every page in the bottom-right corner. Priya signs page 1 in the bottom-right
+corner (from the top-level defaults) **plus** one extra box at an exact spot on page 2.
+
+**`extraPlaceholders` coordinates** are normalised fractions of the page, `0`–`1`, with a
+**top-left origin** — so `yNorm: 0` is the top of the page, not the bottom:
+
+| Field | Meaning | Example |
+|---|---|---|
+| `page` | 1-based page number | `2` |
+| `xNorm` | Left edge, as a fraction of page **width** | `0.55` → 55% across |
+| `yNorm` | Top edge, as a fraction of page **height**, **from the top** | `0.35` → 35% down |
+| `wNorm` | Box width, as a fraction of page width | `0.30` → 30% wide |
+| `hNorm` | Box height, as a fraction of page height | `0.08` → 8% tall |
+
+Because the values are normalised, they are paper-size independent — the same numbers land
+in the same relative spot on A4 and Letter.
+
+> **⚠️ These fields are not validated at submission.** A placeholder with `"page": 99` on a
+> 2-page PDF was accepted with **HTTP 201** and no error. The response echoes back neither
+> `signAllPages` nor `extraPlaceholders`, so **a 201 is not evidence your placement was
+> honoured**. Verify visually by opening the returned `signUrl` before trusting a new
+> placement config in production.
 
 ## `GET /esign` — list documents
 
@@ -1074,14 +1181,14 @@ Errors come back as JSON:
 
 ---
 
-# The 12 things that will bite you
+# The 13 things that will bite you
 
 | # | Gotcha |
 |---|---|
 | 1 | **`_idd`, not `_id`** — orders use a display ID everywhere downstream |
 | 2 | **Downloading a stamp marks it "Used"** — not e-signing it. Download once, deliberately |
 | 3 | **`downloadUrl` embeds the API key.** Never log, render, or email it — use `/link` |
-| 4 | **Signature placement is 4 corners, shared by all signatories.** No x/y, no drag-and-drop |
+| 4 | **Signature placement is now per-signatory** — `signAllPages`, `signatories[].allPages`, `signatories[].extraPlaceholders`. But none of it is validated: `"page": 99` on a 2-page PDF returns **201**. Verify visually |
 | 5 | **~512KB PDF limit** (700KB base64). No multipart upload. Compress and validate at upload |
 | 6 | **`doorstepDelivery: false` ⇒ shipping ₹0** — the single biggest cost lever |
 | 7 | **Production only.** Every `POST /orders` spends real money. `quote` and `validate` are free |
@@ -1090,6 +1197,7 @@ Errors come back as JSON:
 | 10 | **Never auto-retry `POST /orders`** — not idempotent, may double-charge. Recover via `refId` |
 | 11 | **Webhooks retry 5×** — the handler must be idempotent |
 | 12 | **`dutyPaidBy` must exactly equal `firstParty` or `secondParty`** — dropdown, not free text |
+| 13 | **`signMethod` has no `email_otp`.** Only `phone_otp`, `aadhaar_otp`, `dsc` — anything else is a **400**. Despite eDrafter calling phone OTP "upcoming", `phone_otp` is accepted and returns 201 |
 
 ---
 

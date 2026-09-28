@@ -276,6 +276,8 @@ export class AppComponent implements OnInit {
 
   pdfUrl(id: string): string { return this.api.pdfUrl(id); }
   signedPdfUrl(id: string): string { return this.api.signedPdfUrl(id); }
+  signingPreviewUrl(id: string): string { return this.api.signingPreviewUrl(id); }
+  finalPdfUrl(id: string): string { return this.api.finalPdfUrl(id); }
   stampPdfUrl(id: string): string { return this.api.stampPdfUrl(id); }
 
   /**

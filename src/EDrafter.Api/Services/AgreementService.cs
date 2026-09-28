@@ -14,6 +14,7 @@ public sealed class AgreementService(
     SpendLedger ledger,
     DutyCalculator duty,
     EsignPricing esignPricing,
+    SignaturePlacementInspector placementInspector,
     IConfiguration config,
     ILogger<AgreementService> logger)
 {
@@ -27,13 +28,22 @@ public sealed class AgreementService(
     /// workflow choice.
     /// </summary>
     private string SignatoryScope =>
-        (config["Esign:Signatories"] ?? "second").Trim().ToLowerInvariant();
+        SigningProvider == ZohoSigningService.Provider
+            ? "both"   // Zoho: both parties always sign, second party first
+            : (config["Esign:Signatories"] ?? "second").Trim().ToLowerInvariant();
+
+    /// <summary>"zoho" (default) or "edrafter" — who collects the signatures.</summary>
+    private string SigningProvider =>
+        (config["Signing:Provider"] ?? ZohoSigningService.Provider).Trim().ToLowerInvariant();
 
     // ---- Draft ------------------------------------------------------------
 
     public async Task<Agreement> CreateDraftAsync(CreateAgreementInput input, CancellationToken ct = default)
     {
-        var d = duty.Calculate(ScopeArticle, input.ConsiderationAmount);
+        // eDrafter prices the duty, not us — their figure is what the order will be
+        // charged, and a local percentage that drifts from theirs would quote one price
+        // and bill another. A refusal here is a validation message for the user.
+        var d = await duty.CalculateAsync(ScopeArticle, input.ConsiderationAmount, ct);
 
         var agreement = new Agreement
         {
@@ -51,6 +61,7 @@ public sealed class AgreementService(
             Purpose = "Lease Agreement",
             Denomination = d.Duty,
             Status = AgreementStatus.Draft,
+            SigningProvider = SigningProvider,
             RefId = $"EDR-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString("N")[..8].ToUpperInvariant()}"
         };
 
@@ -63,7 +74,9 @@ public sealed class AgreementService(
             {
                 Name = agreement.FirstPartyName,
                 Email = agreement.FirstPartyEmail,
-                Phone = agreement.FirstPartyPhone
+                Phone = agreement.FirstPartyPhone,
+                Role = SignatureLayout.FirstParty,
+                SigningOrder = 2
             });
         }
 
@@ -73,7 +86,9 @@ public sealed class AgreementService(
             {
                 Name = agreement.SecondPartyName,
                 Email = agreement.SecondPartyEmail,
-                Phone = agreement.SecondPartyPhone
+                Phone = agreement.SecondPartyPhone,
+                Role = SignatureLayout.SecondParty,
+                SigningOrder = 1
             });
         }
 
@@ -88,8 +103,8 @@ public sealed class AgreementService(
         await db.SaveChangesAsync(ct);
 
         logger.LogInformation(
-            "Draft {Id} created. refId={RefId} duty=₹{Duty} (capped: {Capped})",
-            agreement.Id, agreement.RefId, d.Duty, d.WasCapped);
+            "Draft {Id} created. refId={RefId} duty=₹{Duty} (from eDrafter: {FromEDrafter})",
+            agreement.Id, agreement.RefId, d.Duty, d.FromEDrafter);
 
         return agreement;
     }
@@ -109,9 +124,11 @@ public sealed class AgreementService(
             DoorstepDelivery = false   // always: saves ₹99 + GST, the biggest single lever
         }, ct);
 
+        // Zoho signing is not in the quote yet — the quote is eDrafter's breakdown alone.
+        var zoho = (a.SigningProvider ?? SigningProvider) == ZohoSigningService.Provider;
         var signMethod = config["Esign:DefaultSignMethod"] ?? "phone_otp";
-        var esign = esignPricing.Compute(signMethod, a.Signatories.Count);
-        var d = duty.Calculate(ScopeArticle, a.ConsiderationAmount);
+        var esign = zoho ? null : esignPricing.Compute(signMethod, a.Signatories.Count);
+        var d = await duty.CalculateAsync(ScopeArticle, a.ConsiderationAmount, ct);
 
         return new QuotePreview(
             Duty: d,
@@ -123,7 +140,8 @@ public sealed class AgreementService(
             WalletBalance: quote?.WalletBalance ?? 0,
             Affordable: quote?.Affordable ?? false,
             Esign: esign,
-            GrandTotal: (quote?.Total ?? 0) + esign.TotalRupees);
+            GrandTotal: (quote?.Total ?? 0) + (esign?.TotalRupees ?? 0),
+            SigningProvider: zoho ? ZohoSigningService.Provider : "edrafter");
     }
 
     // ---- Place order (SPENDS) ---------------------------------------------
@@ -265,8 +283,17 @@ public sealed class AgreementService(
             return SpendOutcome<CreateEsignResponse>.Blocked(
                 $"Already sent for signing (document {a.EsignDocumentId}). Refusing to charge again.");
 
-        var signMethod = config["Esign:DefaultSignMethod"] ?? "phone_otp";
+        if (a.ZohoRequestId is not null)
+            return SpendOutcome<CreateEsignResponse>.Blocked(
+                $"This agreement already has a Zoho Sign request ({a.ZohoRequestId}). Not sending through eDrafter too.");
+
+        var signMethod = config["Esign:DefaultSignMethod"] ?? "aadhaar_otp";
         var cost = esignPricing.Compute(signMethod, a.Signatories.Count);
+
+        // Placeholders are per page, so the page count has to be known before sending.
+        // eDrafter silently drops a placeholder for a page that does not exist, so a
+        // wrong count here means missing signatures rather than an error.
+        var pageCount = CountPdfPages(documentBase64);
 
         var req = new CreateEsignRequest
         {
@@ -278,14 +305,45 @@ public sealed class AgreementService(
             DocumentName = "agreement.pdf",
             Reason = "Lease agreement execution",
             ExpiryDays = config.GetValue("Esign:ExpiryDays", 7),
-            SignaturePosition = config["Esign:SignaturePosition"] ?? "bottom-left",
-            Signatories = a.Signatories.Select(s => new EsignSignatoryDto
+
+            // No all-pages flag. Every page is enumerated explicitly instead — one base
+            // Placeholder plus an extra per remaining page — which is exactly what
+            // eDrafter's own dashboard sends, and the only form that honours the
+            // coordinates we ask for.
+            SignColor = "blue",
+            SignSize = "medium",
+            SigningOrder = "parallel",
+            OtpRequired = true,
+            ReminderCount = 2,
+            ReminderFrequencyDays = 3,
+
+            Signatories = a.Signatories.Select((s, index) =>
             {
-                Name = s.Name,
-                Email = s.Email,
-                Phone = s.Phone
+                var (basePlaceholder, extra) = BuildPlacement(index, pageCount);
+                return new EsignSignatoryDto
+                {
+                    Name = s.Name,
+                    Email = s.Email,
+                    Phone = s.Phone,
+                    Placeholder = basePlaceholder,
+                    ExtraPlaceholders = extra
+                };
             }).ToList()
         };
+
+        // Last chance to catch a bad layout. eDrafter returns 201 for overlapping or
+        // off-page signatures just as readily as for correct ones, and the fee is charged
+        // at link generation and never refunded — so a layout mistake discovered in the
+        // signed PDF has already cost money. Block here instead.
+        var placement = placementInspector.Inspect(req, pageCount);
+
+        if (placement.HasOverlap)
+        {
+            logger.LogError("Refusing to send agreement {Id}: {Summary}", a.Id, placement.Summary);
+            return SpendOutcome<CreateEsignResponse>.Blocked(placement.Summary);
+        }
+
+        logger.LogInformation("Signature placement checked: {Summary}", placement.Summary);
 
         logger.LogWarning(
             "Sending for signing: {Cost} — NON-REFUNDABLE, debited at link generation.",
@@ -328,6 +386,115 @@ public sealed class AgreementService(
         }
 
         return outcome;
+    }
+
+    // ---- Signature placement ----------------------------------------------
+
+    /// <summary>
+    /// The signature layout this agreement WOULD be sent with, checked for overlap.
+    /// Free and sends nothing — it exists so the layout can be seen before the
+    /// non-refundable e-sign fee is committed.
+    /// </summary>
+    public async Task<PlacementReport> PreviewPlacementAsync(
+        Guid agreementId, string documentBase64, CancellationToken ct = default)
+    {
+        var a = await LoadAsync(agreementId, ct);
+        var pageCount = CountPdfPages(documentBase64);
+
+        var req = new CreateEsignRequest
+        {
+            Signatories = a.Signatories.Select((s, index) =>
+            {
+                var (basePlaceholder, extra) = BuildPlacement(index, pageCount);
+                return new EsignSignatoryDto
+                {
+                    Name = s.Name,
+                    Email = s.Email,
+                    Phone = s.Phone,
+                    Placeholder = basePlaceholder,
+                    ExtraPlaceholders = extra
+                };
+            }).ToList()
+        };
+
+        return placementInspector.Inspect(req, pageCount);
+    }
+
+    /// <summary>
+    /// Signature boxes for one signatory, covering every page.
+    ///
+    /// Returns the BASE placeholder (page 1) plus the extras (pages 2..n). eDrafter needs
+    /// both: ExtraPlaceholders on their own are ignored and the signatory is silently
+    /// dropped. This split is how eDrafter's own dashboard implements "sign every page" —
+    /// it sends no all-pages flag, just one box per page.
+    ///
+    /// The first party takes the bottom-left column and the second the bottom-right, which
+    /// SignaturePosition cannot express — that is one corner shared by everyone. Further
+    /// signatories alternate columns, stepping upward so boxes never collide.
+    ///
+    /// Coordinates are fractions of the page with a TOP-LEFT origin, so a larger yNorm is
+    /// nearer the bottom. The box size matches the dashboard's own.
+    /// </summary>
+    private static (EsignPlaceholderDto Base, List<EsignPlaceholderDto> Extra) BuildPlacement(
+        int signatoryIndex, int pageCount)
+    {
+        const decimal leftX = 0.02m;
+        const decimal rightX = 0.55m;
+        const decimal bottomY = 0.81m;
+        const decimal width = 0.26m;    // dashboard default
+        const decimal height = 0.09m;   // dashboard default
+
+        // Even index -> left column (first party), odd -> right column (second party).
+        var x = signatoryIndex % 2 == 0 ? leftX : rightX;
+
+        // Each pair after the first is lifted clear of the pair below it.
+        var y = bottomY - (signatoryIndex / 2) * (height + 0.02m);
+
+        EsignPlaceholderDto Box(int page) => new()
+        {
+            Page = page,
+            XNorm = x,
+            YNorm = y,
+            WNorm = width,
+            HNorm = height
+        };
+
+        return (Box(1), Enumerable.Range(2, Math.Max(pageCount - 1, 0)).Select(Box).ToList());
+    }
+
+    /// <summary>
+    /// Page count of a base64 PDF, read from its page-tree /Count.
+    ///
+    /// Falls back to 1 rather than throwing: a wrong count costs signatures on later pages,
+    /// but refusing to send would block a document that is otherwise fine.
+    /// </summary>
+    private int CountPdfPages(string documentBase64)
+    {
+        try
+        {
+            var bytes = Convert.FromBase64String(documentBase64);
+            var text = System.Text.Encoding.Latin1.GetString(bytes);
+
+            var counts = System.Text.RegularExpressions.Regex
+                .Matches(text, @"/Type\s*/Pages\b[^>]*?/Count\s+(\d+)")
+                .Select(m => int.Parse(m.Groups[1].Value))
+                .ToList();
+
+            // The root page tree holds the total; nested nodes hold their own subtotals.
+            if (counts.Count > 0) return Math.Max(counts.Max(), 1);
+
+            var pageObjects = System.Text.RegularExpressions.Regex
+                .Matches(text, @"/Type\s*/Page\b(?!s)").Count;
+
+            return Math.Max(pageObjects, 1);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not read the PDF page count; assuming 1 page. Signatures will only " +
+                "be placed on the first page.");
+            return 1;
+        }
     }
 
     // ---- Polling ----------------------------------------------------------
@@ -404,5 +571,6 @@ public sealed record QuotePreview(
     decimal OrderTotal,
     decimal WalletBalance,
     bool Affordable,
-    EsignCost Esign,
-    decimal GrandTotal);
+    EsignCost? Esign,
+    decimal GrandTotal,
+    string SigningProvider);

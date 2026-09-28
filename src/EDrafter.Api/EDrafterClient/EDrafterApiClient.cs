@@ -75,6 +75,42 @@ public sealed class EDrafterApiClient(HttpClient http, ILogger<EDrafterApiClient
         return await res.Content.ReadFromJsonAsync<QuoteResponse>(Json, ct);
     }
 
+    /// <summary>
+    /// Document types for a state, each with its stampDutyRule when eDrafter auto-prices it.
+    /// </summary>
+    public Task<ArticlesResponse?> GetArticlesAsync(string state, CancellationToken ct = default) =>
+        http.GetFromJsonAsync<ArticlesResponse>(
+            $"states/{Uri.EscapeDataString(state)}/articles", Json, ct);
+
+    /// <summary>
+    /// Asks eDrafter for the stamp duty. Free, and the same engine POST /orders uses, so
+    /// the figure here is exactly what the order will be charged — which is the point of
+    /// calling it rather than computing the percentage ourselves.
+    ///
+    /// A 400 is a normal answer, not a fault: it is how eDrafter reports an amount below
+    /// the article's minimum. The message is written for end users, so it is surfaced
+    /// rather than swallowed.
+    /// </summary>
+    public async Task<StampDutyCalcResponse?> CalculateStampDutyAsync(
+        StampDutyCalcRequest req, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync("stamp-duty/calculate", req, Json, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
+
+        if (res.IsSuccessStatusCode)
+            return JsonSerializer.Deserialize<StampDutyCalcResponse>(body, Json);
+
+        if ((int)res.StatusCode == 400)
+        {
+            var problem = JsonSerializer.Deserialize<StampDutyCalcResponse>(body, Json);
+            throw new StampDutyException(
+                problem?.Message ?? $"eDrafter rejected the stamp duty request: {Trim(body)}");
+        }
+
+        throw new HttpRequestException(
+            $"POST /stamp-duty/calculate returned {(int)res.StatusCode}: {Trim(body)}");
+    }
+
     public Task<OrderDto?> GetOrderAsync(int idd, CancellationToken ct = default) =>
         http.GetFromJsonAsync<OrderDto>($"orders/{idd}", Json, ct);
 
