@@ -325,10 +325,10 @@ the event fired, the push is simply lost. **Reload** — the page re-fetches sta
 
 | | |
 |---|---|
-| **API key** | Move to Key Vault. It is currently in a committed file. |
+| **API key** | Move to Key Vault. Today it lives in the gitignored `appsettings.Local.json`. |
 | **Webhook secret** | Same. The file-based store is for local tunnelling only. |
 | **Tunnel** | Replace with a real public host. |
 | **Database** | Switch to PostgreSQL. |
-| **Spend ceiling** | Currently disabled. Re-enable with a sensible cap. |
+| **Spend ceiling** | Off by decision — users may order as many as they need. The arming switch and the idempotency ledger still apply. |
 | **`ArmSpending`** | Keep `false` in every checked-in config. |
 | **`certificateNo`** | Empty on this test account. Verify it populates on a live one. |

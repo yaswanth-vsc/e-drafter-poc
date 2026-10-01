@@ -96,7 +96,17 @@ public sealed class CreateOrderRequest
     public string? ArticleCode { get; set; }
     public int Quantity { get; set; } = 1;
     public decimal Denomination { get; set; }
+    /// <summary>
+    /// Exactly one of these is sent, as the article's stamp-duty rule says (rule.requires).
+    /// Karnataka 30(1)(i) requires rentalSecurity: eDrafter rejects the order with
+    /// "Provide the rental security amount for article 30(1)(i)" when only
+    /// considerationPrice is sent. The unused one is omitted, not sent as null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public decimal? ConsiderationPrice { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? RentalSecurity { get; set; }
     public bool DoorstepDelivery { get; set; }
     public string RefId { get; set; } = "";
 }
@@ -500,7 +510,17 @@ public sealed class ValidateOrderRequest
     public string? Article { get; set; }
 
     public decimal? Denomination { get; set; }
+    /// <summary>
+    /// Exactly one of these is sent, as the article's stamp-duty rule says (rule.requires).
+    /// Karnataka 30(1)(i) requires rentalSecurity: eDrafter rejects the order with
+    /// "Provide the rental security amount for article 30(1)(i)" when only
+    /// considerationPrice is sent. The unused one is omitted, not sent as null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public decimal? ConsiderationPrice { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? RentalSecurity { get; set; }
 }
 
 /// <summary>

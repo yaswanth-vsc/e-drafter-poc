@@ -157,6 +157,12 @@ public sealed class AgreementService(
 
         var productId = await ResolveProductIdAsync(ct);
 
+        // The same choice the duty calculation made: the article's rule says which amount
+        // field it prices on. 30(1)(i) wants rentalSecurity and rejects an order that
+        // carries only considerationPrice. Free read.
+        var rule = await duty.GetRuleAsync(ScopeArticle, ct);
+        var wantsRental = string.Equals(rule?.Requires, "rentalSecurity", StringComparison.OrdinalIgnoreCase);
+
         var req = new CreateOrderRequest
         {
             FirstParty = a.FirstPartyName,
@@ -168,7 +174,8 @@ public sealed class AgreementService(
             ArticleCode = ScopeArticle,
             Quantity = ScopeQuantity,
             Denomination = a.Denomination,
-            ConsiderationPrice = a.ConsiderationAmount,
+            RentalSecurity = wantsRental ? a.ConsiderationAmount : null,
+            ConsiderationPrice = wantsRental ? null : a.ConsiderationAmount,
             DoorstepDelivery = false,
             RefId = a.RefId
         };
@@ -187,6 +194,7 @@ public sealed class AgreementService(
                 ArticleCode = req.ArticleCode,
                 Article = req.ArticleCode,     // the field this endpoint actually reads
                 Denomination = req.Denomination,
+                RentalSecurity = req.RentalSecurity,
                 ConsiderationPrice = req.ConsiderationPrice
             }, ct);
             if (validation is { Valid: false })

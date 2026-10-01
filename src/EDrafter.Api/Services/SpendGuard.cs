@@ -4,14 +4,15 @@ using Microsoft.EntityFrameworkCore;
 namespace EDrafter.Api.Services;
 
 /// <summary>
-/// Two independent brakes on real spending, on top of the ledger's idempotency guard.
+/// Brakes on real spending, on top of the ledger's idempotency guard.
 ///
 ///   1. ARMING   — pointing at the live API is not enough. ArmSpending must also be true,
 ///                 and it is false in every checked-in config.
-///   2. CEILING  — a running total of every successful debit, capped. A loop bug cannot
-///                 drain the wallet even if it defeats everything else.
+///   2. CEILING  — optional cap on the running total of every successful debit.
+///                 OFF by default (MaxTotalSpendPaise = 0): users may order as many as they
+///                 need. Set a positive value to cap total spend again.
 ///
-/// Either brake alone stops an accidental charge.
+/// The idempotency ledger still guarantees one agreement can never be charged twice.
 /// </summary>
 public sealed class SpendGuard(
     AppDbContext db,
@@ -23,7 +24,7 @@ public sealed class SpendGuard(
 
     private bool IsArmed => config.GetValue("EDrafter:ArmSpending", false);
 
-    private long MaxTotalSpendPaise => config.GetValue("EDrafter:MaxTotalSpendPaise", 20_000L);
+    private long MaxTotalSpendPaise => config.GetValue("EDrafter:MaxTotalSpendPaise", 0L);
 
     /// <summary>
     /// Returns null when the spend may proceed, or a human-readable reason when it may not.

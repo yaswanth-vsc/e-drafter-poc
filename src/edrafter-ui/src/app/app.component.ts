@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, effect, inject, signal } from '@angular/core';
+import { Component, OnInit, effect, inject, signal, untracked } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ApiService } from './api.service';
 import { Agreement, Quote, SpendResponse, SpendSummary, StateRules } from './models';
@@ -52,15 +52,21 @@ export class AppComponent implements OnInit {
 
   constructor() {
     // A live update for the agreement on screen refreshes it in place.
+    //
+    // Only liveUpdate() may be a dependency. The rest runs untracked: reading
+    // agreement() here would make the effect re-run every time the refresh below
+    // sets it — an endless reload loop, one GET per tick, after any webhook.
     effect(() => {
       const update = this.api.liveUpdate();
       if (!update) return;
-      this.liveMessage.set(update.message);
-      const current = this.agreement();
-      if (current && update.id === current.id) {
-        this.api.get(current.id).subscribe(a => this.agreement.set(a));
-      }
-      this.loadList();
+      untracked(() => {
+        this.liveMessage.set(update.message);
+        const current = this.agreement();
+        if (current && update.id === current.id) {
+          this.api.get(current.id).subscribe(a => this.agreement.set(a));
+        }
+        this.loadList();
+      });
     });
   }
 

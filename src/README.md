@@ -103,7 +103,7 @@ Four independent layers. The first is structural, not a matter of discipline:
 | **Idempotency ledger** | A `spend_attempt` row with a **UNIQUE** `idempotency_key`, written **before** the call. The key is derived (`order:{agreementId}`), never random — so one agreement cannot produce two orders. **Verified: 8 concurrent requests → exactly 1 charge.** |
 | **No retry policy** | `POST /orders` and `POST /esign` have **zero** retries registered. Polly's retry-on-everything is exactly the bug that double-charges. |
 | **Arming switch** | `EDrafter:ArmSpending` is `false` in every checked-in config. Pointing at the live API is **not enough** to spend. |
-| **Budget ceiling** | `EDrafter:MaxTotalSpendPaise` (default ₹200). A loop bug cannot drain the wallet. |
+| **Budget ceiling** | `EDrafter:MaxTotalSpendPaise` — **off by default (0)**, so users can order as many as they need. Set a positive value (paise) to cap total spend. |
 
 ### The UNKNOWN outcome — the case this is all for
 
