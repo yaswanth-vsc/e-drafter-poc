@@ -36,10 +36,9 @@ public sealed class ZohoSignClient(
     /// POST /requests — uploads the finished PDF and creates a DRAFT with one SIGN action
     /// per signer. Free: nothing is sent and nobody is emailed until /submit.
     ///
-    /// is_sequential with signing_order makes Zoho email the second party first and the
-    /// first party only after the second party has signed. allowed_cloud_provider_ids
-    /// restricts each signer to Aadhaar eSign — without it the signer can choose a plain
-    /// Zoho signature from the "Sign via" dropdown.
+    /// is_sequential with signing_order makes Zoho notify the second party first and the
+    /// first party only after the second party has signed. Delivery, signing method and
+    /// recipient authentication all come from config — see <see cref="BuildAction"/>.
     /// </summary>
     public async Task<ZohoCreatedRequest> CreateRequestAsync(
         byte[] pdf, string fileName, string requestName, string notes,
@@ -47,27 +46,7 @@ public sealed class ZohoSignClient(
     {
         var actions = new JsonArray();
         foreach (var s in signers.OrderBy(s => s.SigningOrder))
-        {
-            var action = new JsonObject
-            {
-                ["action_type"] = "SIGN",
-                ["recipient_name"] = s.Name,
-                ["recipient_email"] = s.Email,
-                ["signing_order"] = s.SigningOrder,
-                // Not Aadhaar — this is an extra OTP just to OPEN the document. The Aadhaar
-                // OTP at signing already authenticates the signer, so it stays off.
-                ["verify_recipient"] = false,
-                ["allowed_cloud_provider_ids"] = ProviderIds()
-            };
-
-            if (!string.IsNullOrWhiteSpace(s.Phone))
-            {
-                action["recipient_phonenumber"] = s.Phone;
-                action["recipient_countrycode_iso"] = "IN";
-            }
-
-            actions.Add(action);
-        }
+            actions.Add(BuildAction(s));
 
         var data = new JsonObject
         {
@@ -166,22 +145,15 @@ public sealed class ZohoSignClient(
     public async Task<JsonNode> SubmitAsync(
         string requestId, IReadOnlyList<ZohoSigner> signers, CancellationToken ct = default)
     {
+        // The same action shape as create. Zoho's create reference does not list every key,
+        // its cloud-signing guide shows them on requests.actions[] — sending them on both
+        // calls is what makes the settings hold whichever call Zoho reads them from.
         var actions = new JsonArray();
         foreach (var s in signers.OrderBy(s => s.SigningOrder))
         {
-            actions.Add(new JsonObject
-            {
-                ["action_id"] = s.ActionId,
-                ["action_type"] = "SIGN",
-                ["recipient_name"] = s.Name,
-                ["recipient_email"] = s.Email,
-                ["signing_order"] = s.SigningOrder,
-                ["verify_recipient"] = false,
-                // Sent again at submit: Zoho's create reference does not list this key, its
-                // cloud-signing guide shows it on requests.actions[]. Sending it on both is
-                // what makes "Aadhaar only" hold whichever call Zoho reads it from.
-                ["allowed_cloud_provider_ids"] = ProviderIds()
-            });
+            var action = BuildAction(s);
+            action["action_id"] = s.ActionId;
+            actions.Add(action);
         }
 
         var json = new JsonObject { ["requests"] = new JsonObject { ["actions"] = actions } }.ToJsonString();
@@ -224,6 +196,42 @@ public sealed class ZohoSignClient(
     }
 
     // ---- Plumbing -------------------------------------------------------------
+
+    /// <summary>
+    /// One SIGN action, built from config: delivery, signing method and recipient auth.
+    ///
+    ///   delivery_mode      EMAIL | EMAIL_SMS. "SMS" alone is rejected by Zoho (code 9013).
+    ///   verification_type  EMAIL | SMS — an OTP to OPEN the document, NOT the signature.
+    ///   allowed_cloud_..   [25] pins signing to Aadhaar eSign; omitted entirely for ZOHO,
+    ///                      which leaves the signer Zoho's own signature.
+    /// </summary>
+    private JsonObject BuildAction(ZohoSigner s)
+    {
+        var action = new JsonObject
+        {
+            ["action_type"] = "SIGN",
+            ["recipient_name"] = s.Name,
+            ["recipient_email"] = s.Email,
+            ["signing_order"] = s.SigningOrder,
+            ["delivery_mode"] = _o.DeliveryMode,
+            ["verify_recipient"] = _o.AuthEnabled
+        };
+
+        if (_o.AuthEnabled)
+            action["verification_type"] = _o.RecipientAuth;
+
+        if (_o.UsesAadhaar)
+            action["allowed_cloud_provider_ids"] = ProviderIds();
+
+        // Required by Zoho for SMS delivery and for an SMS OTP; harmless otherwise.
+        if (!string.IsNullOrWhiteSpace(s.Phone))
+        {
+            action["recipient_phonenumber"] = s.Phone;
+            action["recipient_countrycode_iso"] = _o.PhoneCountryIso;
+        }
+
+        return action;
+    }
 
     private JsonArray ProviderIds()
     {

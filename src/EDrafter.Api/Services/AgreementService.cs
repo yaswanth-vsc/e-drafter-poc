@@ -58,7 +58,7 @@ public sealed class AgreementService(
             MonthlyRent = input.MonthlyRent,
             LeaseTermMonths = input.LeaseTermMonths,
             LeaseStartDate = input.LeaseStartDate,
-            Purpose = "Lease Agreement",
+            Purpose = "Rental Agreement",
             Denomination = d.Duty,
             Status = AgreementStatus.Draft,
             SigningProvider = SigningProvider,
@@ -305,7 +305,7 @@ public sealed class AgreementService(
 
         var req = new CreateEsignRequest
         {
-            Name = $"Lease Agreement - {a.FirstPartyName} & {a.SecondPartyName}",
+            Name = $"Rental Agreement - {a.FirstPartyName} & {a.SecondPartyName}",
             SignMethod = signMethod,
             OrderId = a.OrderIdd,
             StampId = a.StampId,

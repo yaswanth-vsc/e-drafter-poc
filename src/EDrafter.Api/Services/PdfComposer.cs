@@ -24,8 +24,12 @@ public sealed class PdfComposer(IWebHostEnvironment env, ILogger<PdfComposer> lo
         QuestPDF.Settings.License = LicenseType.Community;
     }
 
-    /// <summary>Merges stamp + agreement body and returns the file with its page geometry.</summary>
-    public ComposedPdf Compose(Agreement a, byte[] agreementBody)
+    /// <summary>
+    /// Merges stamp + agreement body and returns the file with its page geometry.
+    /// <paramref name="stampOpening"/>, when given, is a one-page PDF laid over the FIRST
+    /// stamp page — the start of the agreement, written in the stamp's blank area.
+    /// </summary>
+    public ComposedPdf Compose(Agreement a, byte[] agreementBody, byte[]? stampOpening = null)
     {
         if (a.StampPdfPath is null || !File.Exists(a.StampPdfPath))
             throw new InvalidOperationException(
@@ -37,8 +41,24 @@ public sealed class PdfComposer(IWebHostEnvironment env, ILogger<PdfComposer> lo
 
         File.WriteAllBytes(bodyPath, agreementBody);
 
+        // The stamp as issued stays untouched on disk; the written-on copy is separate.
+        var stampPath = a.StampPdfPath;
+        if (stampOpening is not null)
+        {
+            var openingPath = Path.Combine(dir, $"{a.Id}-stamp-opening.pdf");
+            var writtenStampPath = Path.Combine(dir, $"{a.Id}-stamp-written.pdf");
+            File.WriteAllBytes(openingPath, stampOpening);
+
+            DocumentOperation
+                .LoadFile(a.StampPdfPath)
+                .OverlayFile(new DocumentOperation.LayerConfiguration { FilePath = openingPath, TargetPages = "1" })
+                .Save(writtenStampPath);
+
+            stampPath = writtenStampPath;
+        }
+
         DocumentOperation
-            .LoadFile(a.StampPdfPath)
+            .LoadFile(stampPath)
             .MergeFile(bodyPath)
             .Save(finalPath);
 

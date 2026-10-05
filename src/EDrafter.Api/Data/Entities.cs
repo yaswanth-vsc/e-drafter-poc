@@ -81,7 +81,7 @@ public sealed class Agreement
     public decimal MonthlyRent { get; set; }
     public int LeaseTermMonths { get; set; }
     public DateOnly LeaseStartDate { get; set; }
-    public string Purpose { get; set; } = "Lease Agreement";
+    public string Purpose { get; set; } = "Rental Agreement";
 
     /// <summary>Computed duty: 0.5% of consideration, capped per article config.</summary>
     public decimal Denomination { get; set; }

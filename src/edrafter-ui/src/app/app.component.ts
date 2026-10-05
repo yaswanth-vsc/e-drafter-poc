@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, OnInit, effect, inject, signal, untracked } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ApiService } from './api.service';
-import { Agreement, Quote, SpendResponse, SpendSummary, StateRules } from './models';
+import { Agreement, Quote, Signatory, SpendResponse, SpendSummary, StateRules } from './models';
 
 type Step = 'form' | 'review' | 'tracking';
 
@@ -299,10 +299,48 @@ export class AppComponent implements OnInit {
   statusClass(status: string): string {
     switch (status) {
       case 'Signed': return 'ok';
-      case 'Failed': case 'NeedsReview': return 'bad';
+      case 'Failed': case 'NeedsReview': case 'OrderRejected': return 'bad';
       case 'Draft': return 'muted';
       default: return 'pending';
     }
+  }
+
+  /**
+   * Zoho reports an action status in its own vocabulary. Spell it out, so a
+   * declined signer never reads like one who simply has not opened the document.
+   */
+  signerStatus(s: Signatory): string {
+    switch ((s.status ?? '').toLowerCase()) {
+      case 'signed': return 'Signed';
+      case 'declined': case 'rejected': return 'Declined';
+      case 'viewed': case 'opened': return 'Opened';
+      case 'sent': case 'unopened': case 'inprogress': return 'Link sent';
+      case 'waiting': case 'noaction': return 'Waiting their turn';
+      case 'expired': return 'Expired';
+      case 'recalled': return 'Recalled';
+      case 'pending': return 'Not sent yet';
+      default: return s.status ?? '—';
+    }
+  }
+
+  signerStatusClass(s: Signatory): string {
+    switch ((s.status ?? '').toLowerCase()) {
+      case 'signed': return 'ok';
+      case 'declined': case 'rejected': case 'expired': return 'bad';
+      case 'waiting': case 'noaction': case 'pending': return 'muted';
+      default: return 'pending';
+    }
+  }
+
+  /** What actually happened, where the agreement status alone is ambiguous. */
+  outcomeNote(a: Agreement): string | null {
+    const declined = a.signatories.find(s => ['declined', 'rejected'].includes((s.status ?? '').toLowerCase()));
+    if (declined) return `${declined.name} declined to sign. The Zoho credits are not refunded.`;
+    if (a.signatories.some(s => (s.status ?? '').toLowerCase() === 'expired'))
+      return 'The signing request expired before everyone signed. The Zoho credits are not refunded.';
+    if (a.status === 'Cancelled' && a.zohoRequestId) return 'The signing request was recalled in Zoho Sign.';
+    if (a.status === 'Failed') return 'The signing request ended without completion. The Zoho credits are not refunded.';
+    return null;
   }
 
   fieldInvalid(name: string): boolean {

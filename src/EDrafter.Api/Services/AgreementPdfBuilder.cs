@@ -6,7 +6,7 @@ using QuestPDF.Infrastructure;
 namespace EDrafter.Api.Services;
 
 /// <summary>
-/// Generates the lease agreement PDF from the form data.
+/// Generates the rental agreement PDF from the form data.
 ///
 /// Two things worth knowing about the signature blocks:
 ///
@@ -32,7 +32,11 @@ public sealed class AgreementPdfBuilder
         QuestPDF.Settings.License = LicenseType.Community;
     }
 
-    public byte[] Build(Agreement a)
+    /// <param name="openingOnStamp">
+    /// The opening (date, parties, recital) is printed on the e-stamp paper instead — see
+    /// <see cref="BuildStampOpening"/> — so the body starts at the terms.
+    /// </param>
+    public byte[] Build(Agreement a, bool openingOnStamp = false)
     {
         var zoho = IsZohoLayout(a);
 
@@ -60,7 +64,7 @@ public sealed class AgreementPdfBuilder
                 page.DefaultTextStyle(t => t.FontSize(10).FontFamily("Lato"));
 
                 page.Header().Element(h => Header(h, a));
-                page.Content().Element(c => Content(c, a));
+                page.Content().Element(c => Content(c, a, openingOnStamp));
                 if (zoho)
                     page.Footer().Element(f => ZohoFooter(f, a));
                 else
@@ -74,7 +78,7 @@ public sealed class AgreementPdfBuilder
     private static void Header(IContainer c, Agreement a) =>
         c.Column(col =>
         {
-            col.Item().AlignCenter().Text("LEASE AGREEMENT")
+            col.Item().AlignCenter().Text("RENTAL AGREEMENT")
                 .FontSize(16).Bold().LetterSpacing(0.1f);
             col.Item().AlignCenter().Text("Residential Property — Term not exceeding 12 months")
                 .FontSize(9).FontColor(Colors.Grey.Darken1);
@@ -84,7 +88,68 @@ public sealed class AgreementPdfBuilder
             col.Item().PaddingTop(8).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
         });
 
-    private static void Content(IContainer c, Agreement a) =>
+    /// <summary>
+    /// The opening of the agreement, laid into the blank area of the e-stamp paper under
+    /// "Please write or type below this line" — the way agreements on stamp paper are
+    /// normally written. A one-page PDF the size of the stamp page, transparent except for
+    /// the text, overlaid onto the stamp; the stamp itself is never redrawn.
+    ///
+    /// ScaleToFit shrinks the block slightly if long names would overflow the area, so it
+    /// can never run into the signature boxes below it.
+    /// </summary>
+    public byte[] BuildStampOpening(Agreement a, PdfPageSize stamp, StampTextArea area)
+    {
+        var doc = Document.Create(container =>
+        {
+            container.Page(page =>
+            {
+                page.Size((float)stamp.Width, (float)stamp.Height, Unit.Point);
+                page.MarginLeft(area.Left, Unit.Point);
+                page.MarginTop(area.Top, Unit.Point);
+                page.MarginRight((float)stamp.Width - area.Left - area.Width, Unit.Point);
+                page.MarginBottom((float)stamp.Height - area.Top - area.Height, Unit.Point);
+                page.DefaultTextStyle(t => t.FontSize(9).FontFamily("Lato"));
+
+                page.Content().ScaleToFit().Column(col =>
+                {
+                    col.Spacing(3);
+
+                    col.Item().AlignCenter().Text("RENTAL AGREEMENT").FontSize(12).Bold().LetterSpacing(0.1f);
+                    col.Item().AlignCenter()
+                        .Text($"Residential Property · Karnataka · Article 30(1)(i) · Ref {a.RefId}")
+                        .FontSize(7).FontColor(Colors.Grey.Darken2);
+
+                    col.Item().PaddingTop(3).Text(t =>
+                    {
+                        t.Span("This Rental Agreement is made on ");
+                        t.Span($"{DateTime.UtcNow:dd MMMM yyyy}").Bold();
+                        t.Span(" between:");
+                    });
+
+                    col.Item().PaddingLeft(8).Text(t =>
+                    {
+                        t.Span("LESSOR (First Party): ").Bold();
+                        t.Span(a.FirstPartyName).Bold();
+                        t.Span($"   ·   {a.FirstPartyEmail}   ·   {a.FirstPartyPhone}").FontSize(8).FontColor(Colors.Grey.Darken2);
+                    });
+                    col.Item().PaddingLeft(8).Text(t =>
+                    {
+                        t.Span("LESSEE (Second Party): ").Bold();
+                        t.Span(a.SecondPartyName).Bold();
+                        t.Span($"   ·   {a.SecondPartyEmail}   ·   {a.SecondPartyPhone}").FontSize(8).FontColor(Colors.Grey.Darken2);
+                    });
+
+                    col.Item().PaddingTop(2).Text(
+                        "WHEREAS the Lessor is the lawful owner of the property described in this Agreement and has " +
+                        "agreed to lease it to the Lessee on the terms set out on the following page(s).");
+                });
+            });
+        });
+
+        return doc.GeneratePdf();
+    }
+
+    private static void Content(IContainer c, Agreement a, bool openingOnStamp) =>
         c.PaddingVertical(12).Column(col =>
         {
             col.Spacing(10);
@@ -92,37 +157,45 @@ public sealed class AgreementPdfBuilder
             var start = a.LeaseStartDate;
             var end = start.AddMonths(a.LeaseTermMonths).AddDays(-1);
 
-            col.Item().Text(t =>
+            if (openingOnStamp)
             {
-                t.Span("This Lease Agreement is made on ");
-                t.Span($"{DateTime.UtcNow:dd MMMM yyyy}").Bold();
-                t.Span(" between:");
-            });
-
-            // Parties
-            col.Item().PaddingLeft(10).Column(p =>
+                col.Item().Text("(continued from the e-stamp paper)")
+                    .FontSize(8).Italic().FontColor(Colors.Grey.Darken1);
+            }
+            else
             {
-                p.Spacing(6);
-                p.Item().Text(t =>
+                col.Item().Text(t =>
                 {
-                    t.Span("LESSOR (First Party): ").Bold();
-                    t.Span(a.FirstPartyName).Bold();
+                    t.Span("This Rental Agreement is made on ");
+                    t.Span($"{DateTime.UtcNow:dd MMMM yyyy}").Bold();
+                    t.Span(" between:");
                 });
-                p.Item().PaddingLeft(10).Text($"Email: {a.FirstPartyEmail}   ·   Phone: {a.FirstPartyPhone}")
-                    .FontSize(9).FontColor(Colors.Grey.Darken2);
 
-                p.Item().PaddingTop(4).Text(t =>
+                // Parties
+                col.Item().PaddingLeft(10).Column(p =>
                 {
-                    t.Span("LESSEE (Second Party): ").Bold();
-                    t.Span(a.SecondPartyName).Bold();
-                });
-                p.Item().PaddingLeft(10).Text($"Email: {a.SecondPartyEmail}   ·   Phone: {a.SecondPartyPhone}")
-                    .FontSize(9).FontColor(Colors.Grey.Darken2);
-            });
+                    p.Spacing(6);
+                    p.Item().Text(t =>
+                    {
+                        t.Span("LESSOR (First Party): ").Bold();
+                        t.Span(a.FirstPartyName).Bold();
+                    });
+                    p.Item().PaddingLeft(10).Text($"Email: {a.FirstPartyEmail}   ·   Phone: {a.FirstPartyPhone}")
+                        .FontSize(9).FontColor(Colors.Grey.Darken2);
 
-            col.Item().PaddingTop(6).Text("WHEREAS the Lessor is the lawful owner of the property described " +
-                                          "below and has agreed to lease it to the Lessee on the terms set out " +
-                                          "in this Agreement:");
+                    p.Item().PaddingTop(4).Text(t =>
+                    {
+                        t.Span("LESSEE (Second Party): ").Bold();
+                        t.Span(a.SecondPartyName).Bold();
+                    });
+                    p.Item().PaddingLeft(10).Text($"Email: {a.SecondPartyEmail}   ·   Phone: {a.SecondPartyPhone}")
+                        .FontSize(9).FontColor(Colors.Grey.Darken2);
+                });
+
+                col.Item().PaddingTop(6).Text("WHEREAS the Lessor is the lawful owner of the property described " +
+                                              "below and has agreed to lease it to the Lessee on the terms set out " +
+                                              "in this Agreement:");
+            }
 
             // Terms table
             col.Item().PaddingTop(4).Table(table =>
@@ -158,7 +231,7 @@ public sealed class AgreementPdfBuilder
                 $"The Lessee shall pay a monthly rent of Rs. {a.MonthlyRent:N2}, payable in advance on or " +
                 "before the fifth day of each calendar month.",
 
-                $"This lease is for a term of {a.LeaseTermMonths} months commencing " +
+                $"This tenancy is for a term of {a.LeaseTermMonths} months commencing " +
                 $"{start:dd MMMM yyyy} and ending {end:dd MMMM yyyy}, and shall not be construed as " +
                 "creating any tenancy beyond that term.",
 
@@ -198,6 +271,9 @@ public sealed class AgreementPdfBuilder
                 col.Item().PaddingTop(8).ShowEntire().Text(
                     "IN WITNESS WHEREOF the parties have executed this Agreement using Aadhaar eSign on the " +
                     "date first written above, signing every page, the e-stamp paper included.");
+
+                col.Item().PageBreak();
+                col.Item().Element(c2 => LegalNotice(c2, a));
                 return;
             }
 
@@ -256,6 +332,71 @@ public sealed class AgreementPdfBuilder
                     t.TotalPages();
                 });
             });
+        });
+
+    /// <summary>
+    /// Closing legal notice on its own final page.
+    ///
+    /// ⚠️ SAMPLE WORDING FOR THE POC. It has not been reviewed by a lawyer. Have legal
+    /// approve or replace this text before any real agreement is executed with it.
+    /// </summary>
+    private static void LegalNotice(IContainer c, Agreement a) =>
+        c.Column(col =>
+        {
+            col.Spacing(8);
+
+            col.Item().Text("LEGAL NOTICE AND DECLARATIONS").Bold().FontSize(11);
+
+            col.Item().Text(
+                "1.  EXECUTION BY ELECTRONIC SIGNATURE. This Agreement is executed by the parties using " +
+                "Aadhaar-based electronic signature. Both parties agree that an electronic signature affixed " +
+                "in this manner is a valid and legally enforceable signature under the Information Technology " +
+                "Act, 2000, and that this Agreement shall not be denied legal effect, validity or " +
+                "enforceability solely because it is in electronic form.").LineHeight(1.3f);
+
+            col.Item().Text(
+                "2.  STAMP DUTY. The stamp duty payable on this instrument has been paid by means of the " +
+                "electronic stamp certificate forming the first page of this document, which is an integral " +
+                "part of this Agreement. The parties acknowledge that the e-stamp certificate and this " +
+                "Agreement together constitute a single instrument.").LineHeight(1.3f);
+
+            col.Item().Text(
+                "3.  AUTHENTICATION OF SIGNATORIES. Each party confirms that the name, mobile number and " +
+                "email address recorded in this Agreement are their own, that the Aadhaar credentials used to " +
+                "sign belong to them, and that they have signed of their own free will after reading and " +
+                "understanding its contents.").LineHeight(1.3f);
+
+            col.Item().Text(
+                "4.  COUNTERPARTS AND COPIES. This Agreement is executed in a single electronic original. " +
+                "Each party shall receive an identical electronic copy, and every such copy, together with " +
+                "the completion certificate issued by the e-signature service provider, shall be treated as " +
+                "an original for all purposes.").LineHeight(1.3f);
+
+            col.Item().Text(
+                "5.  ENTIRE AGREEMENT. This Agreement records the entire understanding between the parties " +
+                "in respect of the said property and supersedes all prior discussions, representations and " +
+                "arrangements, whether oral or written. No amendment shall be valid unless made in writing " +
+                "and executed by both parties in the same manner as this Agreement.").LineHeight(1.3f);
+
+            col.Item().Text(
+                "6.  SEVERABILITY. If any provision of this Agreement is held to be invalid or unenforceable, " +
+                "that provision shall be severed and the remaining provisions shall continue in full force " +
+                "and effect.").LineHeight(1.3f);
+
+            col.Item().PaddingTop(6).Text(t =>
+            {
+                t.DefaultTextStyle(s => s.FontSize(8).FontColor(Colors.Grey.Darken1).LineHeight(1.3f));
+                t.Span("Note: ").SemiBold();
+                t.Span(
+                    "this wording is a sample prepared for demonstration purposes and has not been reviewed " +
+                    "by a legal practitioner. It must be approved or replaced by qualified legal advice " +
+                    "before being relied upon.").Italic();
+            });
+
+            col.Item().PaddingTop(4).Text(
+                    $"Reference {a.RefId}" +
+                    (string.IsNullOrWhiteSpace(a.CertificateNo) ? "" : $"  ·  e-Stamp certificate {a.CertificateNo}"))
+                .FontSize(8).FontColor(Colors.Grey.Darken1);
         });
 
     private static bool IsZohoLayout(Agreement a) =>

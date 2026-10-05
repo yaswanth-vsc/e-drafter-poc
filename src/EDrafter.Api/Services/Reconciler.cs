@@ -101,7 +101,7 @@ public sealed class Reconciler(
             return new ReconcileResult(attempt.Id, attempt.Kind, false, "Agreement not found");
 
         // GET /esign is newest-first; match on the document name we would have sent.
-        var expectedName = $"Lease Agreement - {a.FirstPartyName} & {a.SecondPartyName}";
+        var expectedName = $"Rental Agreement - {a.FirstPartyName} & {a.SecondPartyName}";
         var list = await client.ListEsignDocumentsAsync(ct);
 
         var match = list?.Documents.FirstOrDefault(d =>

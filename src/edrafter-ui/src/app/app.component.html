@@ -3,7 +3,7 @@
   <header class="topbar">
     <div>
       <h1>eDrafter POC</h1>
-      <p class="sub">Lease Agreement · Karnataka · Article 30(1)(i)</p>
+      <p class="sub">Rental Agreement · Karnataka · Article 30(1)(i)</p>
     </div>
     <div class="topbar-right">
       @if (spend(); as s) {
@@ -28,7 +28,7 @@
       <!-- ================= STEP 1 — THE FORM ================= -->
       @if (step() === 'form') {
         <section class="card">
-          <h2>Lease details</h2>
+          <h2>Rental details</h2>
           <p class="hint">
             One form. Everything after the stamp arrives happens automatically.
             @if (rules(); as r) {
@@ -242,6 +242,10 @@
             </div>
           }
 
+          @if (outcomeNote(a); as note) {
+            <p class="warn">{{ note }}</p>
+          }
+
           <ol class="timeline">
             <li [class.done]="a.orderIdd">
               <span class="dot"></span>
@@ -373,9 +377,10 @@
                     </small>
                   </div>
                   <div class="sig-right">
-                    <span class="status" [class]="statusClass(s.status === 'signed' ? 'Signed' : 'Pending')">
-                      {{ s.status }}
-                    </span>
+                    <span class="status" [class]="signerStatusClass(s)">{{ signerStatus(s) }}</span>
+                    @if (s.signedAt) {
+                      <small class="muted">{{ s.signedAt | date:'d MMM, HH:mm' }}</small>
+                    }
                     @if (s.signUrl) {
                       <a class="link" [href]="s.signUrl" target="_blank">signing link</a>
                     }

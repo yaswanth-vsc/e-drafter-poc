@@ -42,6 +42,48 @@ public sealed class ZohoOptions
     public bool ArmSpending { get; set; }
 
     /// <summary>
+    /// How the signing link reaches each signer.
+    ///   EMAIL      — email only.
+    ///   EMAIL_SMS  — email AND SMS (0.5 credit per SMS per signer).
+    /// SMS alone is NOT possible: Zoho rejects delivery_mode "SMS" with code 9013, and its
+    /// help states email delivery cannot be disabled. Verified against the live API
+    /// 2026-10-01 for "SMS", "SMS_ONLY", "SMSONLY" and "sms" — only EMAIL_SMS was accepted.
+    /// </summary>
+    public string DeliveryMode { get; set; } = ZohoDeliveryModes.EmailSms;
+
+    /// <summary>
+    /// HOW the signer signs:
+    ///   AADHAAR — Aadhaar eSign (2 credits per signing), locked via allowed_cloud_provider_ids.
+    ///   ZOHO    — an ordinary drawn/typed Zoho signature, no Aadhaar charge.
+    /// </summary>
+    public string SignMethod { get; set; } = ZohoSignMethods.Aadhaar;
+
+    /// <summary>
+    /// An OPTIONAL check before the document will open — not the signature itself:
+    ///   NONE | EMAIL | SMS. SMS costs 0.5 credit per OTP per signer.
+    /// Independent of <see cref="SignMethod"/>: Aadhaar signing with an SMS unlock is valid.
+    /// </summary>
+    public string RecipientAuth { get; set; } = ZohoRecipientAuth.None;
+
+    /// <summary>ISO country code for recipient phone numbers.</summary>
+    public string PhoneCountryIso { get; set; } = "IN";
+
+    public bool DeliversBySms =>
+        string.Equals(DeliveryMode, ZohoDeliveryModes.EmailSms, StringComparison.OrdinalIgnoreCase);
+
+    public bool UsesAadhaar =>
+        string.Equals(SignMethod, ZohoSignMethods.Aadhaar, StringComparison.OrdinalIgnoreCase);
+
+    public bool AuthBySms =>
+        string.Equals(RecipientAuth, ZohoRecipientAuth.Sms, StringComparison.OrdinalIgnoreCase);
+
+    public bool AuthEnabled =>
+        !string.Equals(RecipientAuth, ZohoRecipientAuth.None, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when a phone number is required for every signer.</summary>
+    public bool NeedsPhone => DeliversBySms || AuthBySms;
+
+    /// <summary>
     /// Signing provider ids a signer may choose from. 25 = Aadhaar eSign. Empty means
     /// Aadhaar only — see <see cref="EffectiveCloudProviderIds"/>.
     /// </summary>
@@ -95,6 +137,28 @@ public sealed class ZohoOptions
         : !string.IsNullOrWhiteSpace(ClientId) &&
           !string.IsNullOrWhiteSpace(ClientSecret) &&
           !string.IsNullOrWhiteSpace(RefreshToken);
+}
+
+/// <summary>Values for <see cref="ZohoOptions.DeliveryMode"/> — Zoho's own strings.</summary>
+public static class ZohoDeliveryModes
+{
+    public const string Email = "EMAIL";
+    public const string EmailSms = "EMAIL_SMS";
+}
+
+/// <summary>Values for <see cref="ZohoOptions.SignMethod"/>.</summary>
+public static class ZohoSignMethods
+{
+    public const string Aadhaar = "AADHAAR";
+    public const string Zoho = "ZOHO";
+}
+
+/// <summary>Values for <see cref="ZohoOptions.RecipientAuth"/> — Zoho's verification_type.</summary>
+public static class ZohoRecipientAuth
+{
+    public const string None = "NONE";
+    public const string Email = "EMAIL";
+    public const string Sms = "SMS";
 }
 
 public static class ZohoAuthModes

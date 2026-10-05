@@ -514,19 +514,75 @@ public sealed class ZohoSigningService(
         if (a.ZohoRequestId is not null && a.FinalPdfPath is not null && File.Exists(a.FinalPdfPath))
             return composer.Load(a.FinalPdfPath, stampPages);
 
-        return composer.Compose(a, pdfBuilder.Build(a));
+        // The agreement starts on the stamp paper, in its blank area, the way agreements on
+        // stamp paper are normally written. Off switch for stamp papers laid out differently.
+        if (!config.GetValue("Signing:AgreementTextOnStamp", true))
+            return composer.Compose(a, pdfBuilder.Build(a));
+
+        var stampSize = PdfComposer.ReadPageSizes(File.ReadAllBytes(a.StampPdfPath))[0];
+        var area = SignatureLayout.StampTextAreaFor(
+            stampSize,
+            config.GetValue("Signing:StampTextTopPt", SignatureLayout.StampTextTop),
+            StampPageBottomOffset, StampPageSideOffset);
+
+        return composer.Compose(a,
+            pdfBuilder.Build(a, openingOnStamp: true),
+            pdfBuilder.BuildStampOpening(a, stampSize, area));
     }
 
-    private PlacementReport Inspect(Agreement a, List<SignatureBox> boxes, ComposedPdf composed) =>
-        inspector.Inspect(SignatureLayout.ToInspectable(boxes, a.FirstPartyName, a.SecondPartyName), composed.Pages.Count);
+    private PlacementReport Inspect(Agreement a, List<SignatureBox> boxes, ComposedPdf composed)
+    {
+        var report = inspector.Inspect(
+            SignatureLayout.ToInspectable(boxes, a.FirstPartyName, a.SecondPartyName), composed.Pages.Count);
 
-    private static string? CheckParties(Agreement a)
+        // The agreement opening written into the stamp's blank area must stay clear of the
+        // signature boxes below it. SignatureLayout sizes the area to do that; this proves
+        // it for THIS stamp, whose page size or configured offsets may differ.
+        if (composed.StampPageCount > 0 && config.GetValue("Signing:AgreementTextOnStamp", true))
+        {
+            var area = SignatureLayout.StampTextAreaFor(
+                composed.Pages[0],
+                config.GetValue("Signing:StampTextTopPt", SignatureLayout.StampTextTop),
+                StampPageBottomOffset, StampPageSideOffset);
+
+            var textBottom = area.Top + area.Height;
+            var highestBox = boxes.Where(b => b.PageIndex == 0).Select(b => b.Y).DefaultIfEmpty(double.MaxValue).Min();
+
+            if (area.Height <= 0 || textBottom > highestBox)
+            {
+                report.Issues.Add(new PlacementIssue(
+                    "stamp-text-overlap", 1, ["agreement text"],
+                    $"The agreement text on the e-stamp page would run into the signature boxes " +
+                    $"(text ends at {textBottom:0}pt, boxes start at {highestBox:0}pt). " +
+                    "Lower Signing:StampTextTopPt, or set Signing:AgreementTextOnStamp to false."));
+            }
+        }
+
+        return report;
+    }
+
+    /// <summary>
+    /// Everything Zoho will insist on, checked before the first call. An email address is
+    /// always required — Zoho identifies a signer by it and will not accept an action
+    /// without one, whatever the delivery mode.
+    /// </summary>
+    private string? CheckParties(Agreement a)
     {
         if (string.IsNullOrWhiteSpace(a.FirstPartyEmail) || string.IsNullOrWhiteSpace(a.SecondPartyEmail))
-            return "Both parties need an email address — Zoho sends the signing link by email.";
+            return "Both parties need an email address — Zoho requires one to identify each signer.";
 
         if (string.Equals(a.FirstPartyEmail.Trim(), a.SecondPartyEmail.Trim(), StringComparison.OrdinalIgnoreCase))
             return "Both parties have the same email address. Zoho needs a separate signer for each party.";
+
+        if (_o.NeedsPhone)
+        {
+            var why = _o.DeliversBySms
+                ? $"the signing link is sent by SMS ({_o.DeliveryMode})"
+                : "the one-time password is sent by SMS";
+
+            if (string.IsNullOrWhiteSpace(a.FirstPartyPhone) || string.IsNullOrWhiteSpace(a.SecondPartyPhone))
+                return $"Both parties need a mobile number, because {why}.";
+        }
 
         return null;
     }
@@ -577,12 +633,14 @@ public sealed class ZohoSigningService(
             .ToList();
 
     private static string RequestName(Agreement a) =>
-        $"Lease Agreement - {a.FirstPartyName} & {a.SecondPartyName} - {a.RefId}";
+        $"Rental Agreement - {a.FirstPartyName} & {a.SecondPartyName} - {a.RefId}";
 
-    private static string Notes(Agreement a) =>
-        "Lease agreement on e-stamp paper" +
+    private string Notes(Agreement a) =>
+        "Rental agreement on e-stamp paper" +
         (string.IsNullOrWhiteSpace(a.CertificateNo) ? "" : $" (certificate {a.CertificateNo})") +
-        ". Please sign with Aadhaar eSign: an OTP will be sent to the mobile number linked to your Aadhaar.";
+        (_o.UsesAadhaar
+            ? ". Please sign with Aadhaar eSign: an OTP will be sent to the mobile number linked to your Aadhaar."
+            : ". Please review and sign the document.");
 
     private async Task NotifyAsync(Agreement a, string message, CancellationToken ct) =>
         await hub.Clients.All.SendAsync("AgreementUpdated", new

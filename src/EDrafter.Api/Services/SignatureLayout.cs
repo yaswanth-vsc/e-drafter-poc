@@ -55,6 +55,31 @@ public static class SignatureLayout
     public const float StampPageBottomOffset = 100f;
     public const float StampPageSideOffset = 65f;
 
+    /// <summary>
+    /// Top of the blank area on the stamp paper — just under the "Please write or type below
+    /// this line" rule of the Karnataka e-stamp (measured at ~598pt on an 840pt page).
+    /// </summary>
+    public const float StampTextTop = 612f;
+
+    /// <summary>Gap kept between the agreement text on the stamp and the signature boxes.</summary>
+    public const float StampTextGapAboveBoxes = 6f;
+
+    /// <summary>
+    /// The stamp page's writable area: from <paramref name="top"/> down to just above the
+    /// signature boxes, between the same side margins the boxes use.
+    /// </summary>
+    public static StampTextArea StampTextAreaFor(
+        PdfPageSize stamp, float top = StampTextTop,
+        float stampPageBottomOffset = StampPageBottomOffset, float stampPageSideOffset = StampPageSideOffset)
+    {
+        var boxTop = (float)stamp.Height - stampPageBottomOffset - BoxHeight;
+        return new StampTextArea(
+            Left: stampPageSideOffset,
+            Top: top,
+            Width: (float)stamp.Width - 2 * stampPageSideOffset,
+            Height: Math.Max(boxTop - StampTextGapAboveBoxes - top, 0));
+    }
+
     public const string FirstParty = "first";
     public const string SecondParty = "second";
 
@@ -123,6 +148,9 @@ public static class SignatureLayout
 }
 
 public sealed record PdfPageSize(double Width, double Height);
+
+/// <summary>Where agreement text may go on the stamp page, in points from the top-left.</summary>
+public sealed record StampTextArea(float Left, float Top, float Width, float Height);
 
 /// <summary>One signature box in points, top-left origin, zero-based page index.</summary>
 public sealed record SignatureBox(
